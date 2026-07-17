@@ -1,0 +1,11 @@
+{
+    "watch": [
+        "src/server",
+        "src/scripts"
+    ],
+    "ext": "ts",
+    "exec": "node --loader ts-node/esm --trace-uncaught --trace-warnings ./src/server/server.ts",
+    "env": {
+        "TS_NODE_PROJECT": "tsconfig.server.json"
+    }
+}

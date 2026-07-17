@@ -1,0 +1,172 @@
+<!-- server/overlay-render/overlay.html -->
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: transparent;
+        }
+
+        #root {
+            position: absolute;
+            top: 3%;
+            left: 3%;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            font-family: -apple-system, sans-serif;
+        }
+
+        .board {
+            display: flex;
+            overflow: hidden;
+            border-radius: 5px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+            min-width: 190px;
+        }
+
+        .clock {
+            width: 70px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #0d1a3f;
+            clip-path: polygon(12% 0%, 100% 0%, 100% 100%, 12% 100%, 0% 50%);
+            padding-left: 6px;
+        }
+
+        .clock .round {
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: #22d3ee;
+        }
+
+        .clock .time {
+            font-size: 20px;
+            font-weight: 900;
+            margin: 2px 0;
+            color: #fff;
+            font-variant-numeric: tabular-nums;
+            font-family: monospace;
+        }
+
+        .clock .match {
+            font-size: 7.5px;
+            color: rgba(255, 255, 255, 0.45);
+        }
+
+        .rows {
+            display: flex;
+            flex-direction: column;
+            min-width: 150px;
+            background: #0a1230;
+        }
+
+        .row {
+            display: flex;
+            align-items: stretch;
+            height: 32px;
+        }
+
+        .row .flag {
+            width: 28px;
+        }
+
+        .row .name {
+            flex: 1;
+        }
+
+        .row .score {
+            width: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: 900;
+            font-variant-numeric: tabular-nums;
+            font-size: 16px;
+        }
+
+        .badge {
+            align-self: flex-start;
+            font-weight: 900;
+            letter-spacing: 0.12em;
+            border-radius: 3px;
+            font-size: 9px;
+            padding: 3px 8px;
+            background: #22d3ee;
+            color: #04121f;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root">
+        <div class="board">
+            <div class="clock">
+                <span class="round">ROUND <span id="round">1</span></span>
+                <span class="time" id="time">0:00</span>
+                <span class="match">MATCH <span id="match">1</span></span>
+            </div>
+            <div class="rows">
+                <div class="row">
+                    <div class="flag"></div>
+                    <div class="name"></div>
+                    <div class="score" style="background:#e11d2e" id="redScore">0</div>
+                </div>
+                <div class="row">
+                    <div class="flag"></div>
+                    <div class="name"></div>
+                    <div class="score" style="background:#1d6fe1" id="blueScore">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="badge" id="replayBadge" style="display:none">INSTANT VIDEO REPLAY</div>
+    </div>
+
+    <script>
+        // events được Puppeteer bơm vào qua window.__OVERLAY_DATA__ trước khi load
+        const { scoreEvents, timerEvents, isReplay } = window.__OVERLAY_DATA__;
+
+        function fmtClock(ms) {
+            const sec = Math.max(0, Math.floor(ms / 1000));
+            const m = Math.floor(sec / 60), s = sec % 60;
+            return `${m}:${String(s).padStart(2, "0")}`;
+        }
+
+        function findLatest(events, ts) {
+            let lo = 0, hi = events.length - 1, r = null;
+            while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                if (events[mid].timestamp <= ts) { r = events[mid]; lo = mid + 1; }
+                else hi = mid - 1;
+            }
+            return r;
+        }
+
+        document.getElementById("replayBadge").style.display = isReplay ? "block" : "none";
+
+        // Hàm này được Puppeteer gọi mỗi frame với wallClockTimeMs tương ứng
+        window.renderAtTime = function (wallClockTimeMs) {
+            const score = findLatest(scoreEvents, wallClockTimeMs);
+            const timerEvt = findLatest(timerEvents, wallClockTimeMs);
+            if (score) {
+                document.getElementById("redScore").textContent = score.redScore;
+                document.getElementById("blueScore").textContent = score.blueScore;
+            }
+            if (timerEvt) {
+                const remaining = timerEvt.isRunning
+                    ? Math.max(0, timerEvt.remainingMs - (wallClockTimeMs - timerEvt.timestamp))
+                    : timerEvt.remainingMs;
+                document.getElementById("time").textContent = fmtClock(remaining);
+            }
+        };
+    </script>
+</body>
+
+</html>
