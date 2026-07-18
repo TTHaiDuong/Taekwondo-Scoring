@@ -11,7 +11,7 @@ export const TEST_ROOMS: Map<string, RoundResult> = new Map()
 export const TEST_TIMER_DB: Map<string, MatchTimer> = new Map()
 
 export default function initTestModeChannel(io: any, socket: any) {
-    socket.on("test:open", (data: { courtId: string }) => {
+    socket.on("test:open", (data: { courtId: string }, callback?: () => void) => {
         const round = createEmptyRound()
         TEST_ROOMS.set(data.courtId, round)
 
@@ -23,12 +23,10 @@ export default function initTestModeChannel(io: any, socket: any) {
             breakdown: round.redBreakdown
         })
 
-        io.to(`court-${data.courtId}`).emit(`score:mode:update`, {
-            mode: "test"
-        })
+        callback?.()
     })
 
-    socket.on("test:close", (data: { courtId: string }) => {
+    socket.on("test:close", (data: { courtId: string }, callback?: () => void) => {
         TEST_ROOMS.delete(data.courtId)
 
         const round = getRound(data.courtId)
@@ -42,9 +40,7 @@ export default function initTestModeChannel(io: any, socket: any) {
             breakdown: round.redBreakdown
         })
 
-        io.to(`court-${data.courtId}`).emit(`score:mode:update`, {
-            mode: "match"
-        })
+        callback?.()
     })
 
     socket.on("test:get", (data: { courtId: string }, callback: (isTest: boolean) => void) => {

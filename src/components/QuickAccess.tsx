@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useContext, useEffect, useState } from "react"
 import { useSheet } from "./useSheet"
 import {
     MatchInfo, RoundResult, Side, WinCode,
@@ -11,6 +11,7 @@ import MatchNav from "./MatchNav"
 import RoundResults from "./RoundResults"
 import ScoreHistory from "./ScoreHistory"
 import DeclareWinner from "./DeclareWinner"
+import { UIContext } from "./MobileOperator"
 
 // ============================================================
 // QUICK ACCESS — Bottom sheet chính
@@ -159,6 +160,12 @@ export default function QuickAccess(props: {
         await new Promise(r => setTimeout(r, 1200))
         patchMatch({ status: "confirmed" })
     }
+
+    const { visible: isOpenClearScore } = useContext(UIContext)
+
+    useEffect(() => {
+        if (isOpenClearScore) setTab("rounds")
+    }, [isOpenClearScore])
 
     return (
         <div className="h-full flex flex-col w-full text-white" style={{ background: "#111" }}>

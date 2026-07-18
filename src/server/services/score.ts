@@ -1,4 +1,4 @@
-import { TIMER_DB, MatchTimer, getRemainingMs } from "./timer.js"
+import { TIMER_DB, MatchTimer, getRemainingMs, TIMER_HISTORY, pushTimerReset } from "./timer.js"
 import { settings } from "./setting.js"
 import { getRound, JUDGES_INFO, getJudgeOrder } from "./match.js"
 import {
@@ -139,7 +139,7 @@ function startVote(
 
                 PENDING_VOTES.delete(voteKey)
             },
-                setting?.pendingVoteMs || 1000)
+                setting?.pendingVoteMs || 700)
         }
 
         PENDING_VOTES.set(voteKey, pending)
@@ -174,31 +174,52 @@ function startVote(
     // }
 }
 
+export type ScoreHistoryEntry = {
+    timestamp: number
+    event: ScoreEvent | null
+}
+
+/** Key: courtId|roundNo → mảng lịch sử theo thứ tự thời gian */
+const SCORE_EVENTS: Map<string, ScoreHistoryEntry[]> = new Map()
 /** Key: courtId|roundNo
  * key: real timestamp - Date.now()
  */
-const SCORE_EVENTS: Map<string, Map<number, ScoreEvent>> = new Map()
+const SCORE_EVENTS_BREAK: Map<string, number> = new Map()
 
 function scoreEventKey(courtId: string, roundNo: number) {
     return `${courtId}|${roundNo}`
 }
 
-function addScoreEvent(
+function getOrCreateList(courtId: string, roundNo: number): ScoreHistoryEntry[] {
+    const key = scoreEventKey(courtId, roundNo)
+    let list = SCORE_EVENTS.get(key)
+    if (!list) {
+        list = []
+        SCORE_EVENTS.set(key, list)
+    }
+    return list
+}
+
+/** MỚI: đẩy 1 MỐC RESET — không xoá gì cả, chỉ đánh dấu ranh giới "điểm
+ * đã bị xoá kể từ đây" để tua lại về TRƯỚC mốc này vẫn đúng dữ liệu cũ. */
+export function pushScoreReset(courtId: string, roundNo: number): ScoreHistoryEntry {
+    const test = TEST_ROOMS.get(courtId)
+    const list = getOrCreateList(courtId, roundNo)
+    const entry: ScoreHistoryEntry = { timestamp: Date.now(), event: null }
+    if (!test) list.push(entry)
+    return entry
+}
+
+export function addScoreEvent(
     courtId: string,
     roundNo: number,
-    event: ScoreEvent
+    event?: ScoreEvent
 ) {
     const test = TEST_ROOMS.get(courtId)
     if (test) return
 
-    const key = scoreEventKey(courtId, roundNo)
-    let round = SCORE_EVENTS.get(key)
-
-    if (!round) {
-        round = new Map()
-        SCORE_EVENTS.set(key, round)
-    }
-    round.set(Date.now(), event)
+    const list = getOrCreateList(courtId, roundNo)
+    if (event) list.push({ timestamp: event.timestamp, event })
 }
 
 export function updatedScore(
@@ -212,7 +233,9 @@ export function updatedScore(
     judgeNumber?: (number | undefined)[]
 ) {
     const breakdown = side === "blue" ? "blueBreakdown" : "redBreakdown"
-    const current = round[breakdown][pointType]
+    if (round.blueBreakdown === null) round.blueBreakdown = emptyBreakdown()
+    if (round.redBreakdown === null) round.redBreakdown = emptyBreakdown()
+    const current = round[breakdown]![pointType]
 
     let next: number
 
@@ -222,11 +245,11 @@ export function updatedScore(
         next = current + 1
     } else {
         next = current - 1
-        if (round[breakdown][pointType] === 0) return
+        if (round[breakdown]![pointType] === 0) return
     }
 
     const newValue = Math.max(0, next)
-    round[breakdown][pointType] = newValue
+    round[breakdown]![pointType] = newValue
 
     io.to(`court-${courtId}`).emit(`score:${side}:update`, {
         breakdown: round[breakdown]
@@ -244,11 +267,12 @@ export function updatedScore(
         judgeNumber: judgeNumber,
         action: typeof value === "number" ? "set" : value,
         side: side,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        leadingSide: totalScore.winner
     }
     addScoreEvent(courtId, 1, scoreEvent)
 
-    io.to(`court-${courtId}`).emit("score:event:add", scoreEvent)
+    io.to(`court-${courtId}`).emit("score:event:add", { timestamp: scoreEvent.timestamp, event: scoreEvent })
 }
 
 export function handleJudgeScore(io: any, judgeId: string,
@@ -337,13 +361,21 @@ export default function initScoreChannel(io: any, socket: any) {
     socket.on("score:operator:clear", (data: { courtId: string }) => {
         const round = getRound(data.courtId)
         if (!round) return
-        round.blueBreakdown = emptyBreakdown()
-        round.redBreakdown = emptyBreakdown()
+        round.blueBreakdown = null
+        round.redBreakdown = null
 
-        const scoreEKey = scoreEventKey(data.courtId, 1)
-        SCORE_EVENTS.delete(scoreEKey)
+        const scoreResetEntry = pushScoreReset(data.courtId, 1)
+        io.to(`court-${data.courtId}`).emit("score:event:add", scoreResetEntry)
+
+        pushTimerReset(data.courtId)
+        io.to(`court-${data.courtId}`).emit("timer:event:add", TIMER_HISTORY.get(data.courtId)!.at(-1))
 
         io.to(`court-${data.courtId}`).emit("score:reset")
+
+        const scoreKey = scoreEventKey(data.courtId, 1)
+        const scoreEvts = SCORE_EVENTS.get(scoreKey)
+        if (scoreEvts)
+            SCORE_EVENTS_BREAK.set(data.courtId, scoreEvts.length)
     })
 
     // Máy giám định cập nhật điểm
@@ -377,10 +409,16 @@ export default function initScoreChannel(io: any, socket: any) {
         handleJudgeScore(io, socket.id, data.courtId, round, data.side, data.pointType, timer)
     })
 
-    socket.on("score:events:get", (data: { courtId: string }, callback: (events?: ScoreEvent[]) => void) => {
+    socket.on("score:events:get", (data: { courtId: string, operator: boolean }, callback: (entries?: ScoreHistoryEntry[]) => void) => {
         const scoreEKey = scoreEventKey(data.courtId, 1)
         const events = SCORE_EVENTS.get(scoreEKey)
-        callback(events ? [...events.values()] : undefined)
+        if (!data.operator) {
+            callback(events)
+            return
+        }
+        const start = SCORE_EVENTS_BREAK.get(data.courtId) || 0
+        const slicedEvents = events?.slice(start) || []
+        callback(slicedEvents)
     })
 }
 
@@ -389,23 +427,17 @@ export function getScoreEventsInRange(
     roundNo: number,
     fromMs: number,
     toMs: number
-): ScoreEvent[] {
+): ScoreHistoryEntry[] {
     const key = scoreEventKey(courtId, roundNo)
-    const round = SCORE_EVENTS.get(key)
-    if (!round) return []
+    const all = SCORE_EVENTS.get(key) ?? []
+    const result: ScoreHistoryEntry[] = []
+    let lastBefore: ScoreHistoryEntry | null = null
 
-    // Lấy sự kiện NGAY TRƯỚC fromMs (để biết trạng thái điểm tại đầu clip,
-    // không phải chỉ những sự kiện xảy ra bên trong khoảng) + toàn bộ sự
-    // kiện bên trong [fromMs, toMs].
-    const all = [...round.entries()].sort((a, b) => a[0] - b[0])
-    const result: ScoreEvent[] = []
-    let lastBefore: ScoreEvent | null = null
-
-    for (const [ts, evt] of all) {
-        if (ts < fromMs) {
-            lastBefore = evt
-        } else if (ts <= toMs) {
-            result.push(evt)
+    for (const entry of all) {
+        if (entry.timestamp < fromMs) {
+            lastBefore = entry
+        } else if (entry.timestamp <= toMs) {
+            result.push(entry)
         } else {
             break
         }

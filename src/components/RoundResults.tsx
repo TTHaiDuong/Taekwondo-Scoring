@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState, useCallback } from "react"
+import { useRef, useState, useCallback, useContext } from "react"
 import {
     MatchInfo, RoundResult, Side, WinCode, WIN_CODES,
     ScoreBreakdown, emptyBreakdown, calcTotalFromBreakdown,
@@ -12,6 +12,7 @@ import PopupOverlay from "@/components/PopupOverlay"
 import ArmorI from "@/assets/solid-armor.svg"
 import HelmetI from "@/assets/solid-helmet.svg"
 import PunchI from "@/assets/solid-punch.svg"
+import { UIContext } from "./MobileOperator"
 
 const SIDE_LABEL = { blue: "Xanh", red: "Đỏ" }
 
@@ -385,8 +386,9 @@ function RoundRow(props: {
 
 function ResetMatchButton(props: { onReset: () => void }) {
     const [confirm, setConfirm] = useState(false)
+    const { visible: isOpenClearScore, setVisible: setIsOpenClearScore } = useContext(UIContext)
 
-    if (!confirm) return (
+    if (!confirm && !isOpenClearScore) return (
         <button
             onClick={() => setConfirm(true)}
             className="w-full mt-[4px] py-[8px] rounded-[10px] text-[12px] text-white/90
@@ -415,7 +417,10 @@ function ResetMatchButton(props: { onReset: () => void }) {
                     Xác nhận xoá
                 </button>
                 <button
-                    onClick={() => setConfirm(false)}
+                    onClick={() => {
+                        setConfirm(false)
+                        setIsOpenClearScore(false)
+                    }}
                     className="flex-1 py-[8px] rounded-[10px] text-[13px]
                         text-white/50 bg-white/8 active:bg-white/15 transition-colors"
                 >

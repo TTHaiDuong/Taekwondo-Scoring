@@ -83,8 +83,8 @@ export type RoundResult = {
     // events: ScoreEvent[]
     // roundMs: number
     // Breakdown từng loại điểm (tuỳ chọn — có thể tính từ events)
-    blueBreakdown: ScoreBreakdown
-    redBreakdown: ScoreBreakdown
+    blueBreakdown: ScoreBreakdown | null
+    redBreakdown: ScoreBreakdown | null
 }
 
 export function createEmptyRound(
@@ -93,8 +93,8 @@ export function createEmptyRound(
     return {
         // events: [],
         // roundMs,
-        blueBreakdown: emptyBreakdown(),
-        redBreakdown: emptyBreakdown(),
+        blueBreakdown: null,
+        redBreakdown: null,
     }
 }
 
@@ -238,4 +238,5 @@ export type ScoreEvent = {
     action: "increase" | "decrease" | "set"
     scoreChangeBy: Role
     judgeNumber?: (number | undefined)[]
+    leadingSide: Side | null
 }

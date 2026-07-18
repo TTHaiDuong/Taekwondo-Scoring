@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { ScoreEvent, RoundResult, POINT_MAP } from "../scripts/match-types"
 import { getSingletonSocket } from "@/scripts/global-client-io"
+import { ScoreHistoryEntry } from "@/server/services/score"
 
 // ============================================================
 // SCORE HISTORY — Timeline điểm từng hiệp + undo
@@ -116,12 +117,25 @@ export default function ScoreHistory(props: {
     useEffect(() => {
         const socket = getSingletonSocket()
 
-        socket.emit("score:events:get", { courtId: props.courtId }, (events: ScoreEvent[]) => {
-            setEvents(events)
+        socket.emit("score:events:get", { courtId: props.courtId, operator: true }, (events: ScoreHistoryEntry[]) => {
+            const evts = events
+                .filter((e): e is ScoreHistoryEntry & { event: ScoreEvent } => e.event !== null)
+                .map(e => e.event)
+
+            setEvents(evts)
         })
 
-        const onAdd = (event: ScoreEvent) => {
-            setEvents(prev => [...(prev ? prev : []), event])
+        const onAdd = (event: ScoreHistoryEntry | ScoreHistoryEntry[]) => {
+            console.log(event)
+            if (Array.isArray(event)) {
+                const evts = event
+                    .filter((e): e is ScoreHistoryEntry & { event: ScoreEvent } => e.event !== null)
+                    .map(e => e.event)
+
+                setEvents(evts)
+                return
+            }
+            setEvents(prev => [...(prev ? prev : []), ...(event.event ? [event.event] : [])])
         }
 
         const onClear = () => {

@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation"
 import { ScoreEvent } from "@/scripts/match-types"
 import { getSingletonSocket } from "@/scripts/global-client-io"
 import { getTimeString } from "@/components/MobileOperator"
+import usePageVisibility from "@/components/UsePageVisibility"
 
 // ============================================================
 // VIEWER — HLS-ONLY, kiểu YouTube Live
@@ -737,7 +738,12 @@ export default function Viewer() {
         : null
 
     const currentScore = useScoreOverlay(courtId, wallClockTimeMs)
-    const timerRemainingMs = useTimerOverlay(courtId, wallClockTimeMs)
+    const { remainingMs: timerRemainingMs, hasStarted } = useTimerOverlay(courtId, wallClockTimeMs)
+
+    const isPageActive = usePageVisibility()
+    useEffect(() => {
+        if (!isPageActive) jumpLive()
+    }, [isPageActive])
 
     return (
         <div className="fixed inset-0 bg-black flex flex-col overflow-hidden select-none"
@@ -750,6 +756,7 @@ export default function Viewer() {
                 score={currentScore}
                 timerRemainingMs={timerRemainingMs}
                 isReplay={!isFollowingLive}
+                hasStarted={hasStarted}
             />
 
             <div className={`absolute top-0 left-0 right-0 z-10 flex flex-col transition-opacity duration-300
@@ -856,57 +863,47 @@ export default function Viewer() {
     )
 }
 
-function useScoreOverlay(courtId: string, wallClockTimeMs: number | null) {
-    const [events, setEvents] = useState<ScoreEvent[]>([])
+type ScoreHistoryEntry = {
+    timestamp: number
+    event: ScoreEvent | null
+}
 
-    // Tải lịch sử điểm 1 lần, poll lại định kỳ để lấy các điểm mới ghi
-    // trong lúc bạn đang xem (kể cả khi đang tua lại quá khứ, trận đấu
-    // hiện tại vẫn có thể đang tiếp diễn và ghi thêm điểm mới).
+function useScoreOverlay(courtId: string, wallClockTimeMs: number | null) {
+    const [entries, setEntries] = useState<ScoreHistoryEntry[]>()
+
     useEffect(() => {
         const socket = getSingletonSocket()
 
         socket.emit("court:join", { courtId })
 
-        socket.emit("score:events:get", { courtId }, (events: ScoreEvent[]) => {
-            setEvents(events || [])
+        socket.emit("score:events:get", { courtId }, (entries: ScoreHistoryEntry[]) => {
+            setEntries(entries)
         })
 
-        const onAdd = (event: ScoreEvent) => {
-            setEvents(prev => [...(prev ? prev : []), event])
-        }
-
-        const onClear = () => {
-            setEvents([])
+        const onAdd = (entry: ScoreHistoryEntry) => {
+            setEntries(prev => [...(prev ? prev : []), entry])
         }
 
         socket.on("score:event:add", onAdd)
-        socket.on("score:reset", onClear)
-
-        return () => {
-            socket.off("score:event:add", onAdd)
-            socket.off("score:reset", onClear)
-        }
+        return () => { socket.off("score:event:add", onAdd) }
     }, [courtId])
 
-    // Tìm điểm MỚI NHẤT có timestamp <= wallClockTimeMs — dùng binary
-    // search vì events đã sắp xếp tăng dần, tránh duyệt tuyến tính mỗi
-    // frame nếu events dài (trận đấu nhiều hiệp).
-    const current = useMemo(() => {
-        if (wallClockTimeMs === null || events.length === 0) return null
-        let lo = 0, hi = events.length - 1, result: ScoreEvent | null = null
+    // Tìm entry MỚI NHẤT ≤ wallClockTimeMs — nếu event là null nghĩa là
+    // tại thời điểm này điểm đã bị RESET, trả về null để ScoreOverlay tự
+    // hiển thị 0-0 mặc định (giống cách hasStarted xử lý bên timer).
+    return useMemo(() => {
+        if (wallClockTimeMs === null || !entries || entries.length === 0) return null
+
+        let lo = 0, hi = entries.length - 1, idx = -1
         while (lo <= hi) {
             const mid = (lo + hi) >> 1
-            if (events[mid].timestamp <= wallClockTimeMs) {
-                result = events[mid]
-                lo = mid + 1
-            } else {
-                hi = mid - 1
-            }
+            if (entries[mid].timestamp <= wallClockTimeMs) { idx = mid; lo = mid + 1 }
+            else hi = mid - 1
         }
-        return result
-    }, [events, wallClockTimeMs])
+        if (idx === -1) return null
 
-    return current
+        return entries[idx].event   // có thể là null — ScoreOverlay đã xử lý sẵn
+    }, [entries, wallClockTimeMs])
 }
 
 // ── Design tokens dùng chung (để sau này tái sử dụng khi burn-in vào video) ──
@@ -922,7 +919,7 @@ const SCORE_COLORS = {
 function AthleteRow(props: {
     score: number
     flatColor: string
-    isTop?: boolean
+    isLeading: boolean
 }) {
     return (
         <div
@@ -959,8 +956,11 @@ function AthleteRow(props: {
                 }}
             >
                 <span
-                    className="text-white font-black tabular-nums"
-                    style={{ fontSize: "clamp(12px, 1.25vw, 20px)" }}
+                    className="font-black tabular-nums"
+                    style={{
+                        fontSize: "clamp(12px, 1.25vw, 20px)",
+                        color: props.isLeading ? "#FFD700" : "white"
+                    }}
                 >
                     {props.score}
                 </span>
@@ -975,9 +975,13 @@ function ScoreOverlay(props: {
     roundNo?: number
     matchNo?: number
     isReplay?: boolean   // MỚI: true khi đang tua lại (không ở live edge)
+    hasStarted: boolean
 }) {
-    if (!props.score) return null
-    const s = props.score
+    if (!props.hasStarted) return null
+
+    // Dùng điểm mặc định 0-0 khi chưa có ScoreEvent thật nào.
+    const s: Pick<ScoreEvent, "redScore" | "blueScore" | "leadingSide"> =
+        props.score ?? { redScore: 0, blueScore: 0, leadingSide: null }
 
     const timeStr = typeof props.timerRemainingMs === "number"
         ? getTimeString(props.timerRemainingMs)
@@ -1037,9 +1041,17 @@ function ScoreOverlay(props: {
                     className="flex flex-col"
                     style={{ minWidth: "clamp(115px, 12.5vw, 200px)", backgroundColor: SCORE_COLORS.bgPanel }}
                 >
-                    <AthleteRow score={s.redScore} flatColor={SCORE_COLORS.red} isTop />
+                    <AthleteRow
+                        score={s.redScore}
+                        flatColor={SCORE_COLORS.red}
+                        isLeading={s.leadingSide === "red"}
+                    />
                     <div className="h-px bg-white/10" />
-                    <AthleteRow score={s.blueScore} flatColor={SCORE_COLORS.blue} />
+                    <AthleteRow
+                        score={s.blueScore}
+                        flatColor={SCORE_COLORS.blue}
+                        isLeading={s.leadingSide === "blue"}
+                    />
                 </div>
             </div>
 
@@ -1067,48 +1079,58 @@ type TimerEvent = {
     isRunning: boolean
 }
 
+// MỚI: khớp với TimerHistoryEntry ở server
+type TimerHistoryEntry = {
+    timestamp: number
+    event: TimerEvent | null
+}
+
 function useTimerOverlay(courtId: string, wallClockTimeMs: number | null) {
-    const [events, setEvents] = useState<TimerEvent[]>([])
+    const [entries, setEntries] = useState<TimerHistoryEntry[]>()
 
     useEffect(() => {
         const socket = getSingletonSocket()
 
-        socket.emit("timer:events:get", { courtId }, (evts: TimerEvent[]) => {
-            setEvents(evts || [])
+        socket.emit("timer:events:get", { courtId }, (evts: TimerHistoryEntry[]) => {
+            setEntries(evts)
         })
 
-        const onAdd = (event: TimerEvent) => {
-            setEvents(prev => [...prev, event])
+        const onAdd = (entry: TimerHistoryEntry) => {
+            console.log(entry)
+            setEntries(prev => [...(prev ? prev : []), entry])
         }
 
         socket.on("timer:event:add", onAdd)
         return () => { socket.off("timer:event:add", onAdd) }
     }, [courtId])
 
-    // Tìm sự kiện đồng hồ MỚI NHẤT tại/trước wallClockTimeMs, rồi tính
-    // remainingMs bằng ĐÚNG công thức server dùng (getRemainingMs) — không
-    // suy đoán, chỉ tái dựng chính xác trạng thái thật tại thời điểm đó.
-    const remainingMs = useMemo(() => {
-        if (wallClockTimeMs === null || events.length === 0) return null
-        let lo = 0, hi = events.length - 1, evt: TimerEvent | null = null
+    // Trả về CẢ remainingMs LẪN hasStarted — không cần quét ngược tìm mốc
+    // genesis nữa: binary search tìm phần tử MỚI NHẤT ≤ wallClockTimeMs.
+    // Nếu phần tử đó có event=null → tại thời điểm này đồng hồ đang ở
+    // trạng thái "vừa reset, chưa chạy" → ẩn overlay. Đúng NGAY LẬP TỨC vì
+    // reset luôn là mốc MỚI NHẤT cho tới khi có TimerEvent thật kế tiếp
+    // (run/stop/setRemaining) đè lên nó.
+    return useMemo(() => {
+        if (wallClockTimeMs === null || !entries || entries.length === 0) {
+            return { remainingMs: null, hasStarted: false }
+        }
+
+        let lo = 0, hi = entries.length - 1, idx = -1
         while (lo <= hi) {
             const mid = (lo + hi) >> 1
-            if (events[mid].timestamp <= wallClockTimeMs) {
-                evt = events[mid]
-                lo = mid + 1
-            } else {
-                hi = mid - 1
-            }
+            if (entries[mid].timestamp <= wallClockTimeMs) { idx = mid; lo = mid + 1 }
+            else hi = mid - 1
         }
-        if (!evt) return null
+        if (idx === -1) return { remainingMs: null, hasStarted: false }
 
-        if (!evt.isRunning) return evt.remainingMs   // đứng yên, không cần tính gì thêm
+        const entry = entries[idx]
+        if (entry.event === null) return { remainingMs: null, hasStarted: false }
 
-        // Đang chạy TẠI thời điểm evt — trừ đúng phần đã trôi từ evt.timestamp
-        // tới wallClockTimeMs, giống HỆT công thức getRemainingMs() ở server.
-        const elapsed = wallClockTimeMs - evt.timestamp
-        return Math.max(0, evt.remainingMs - elapsed)
-    }, [events, wallClockTimeMs])
+        const evt = entry.event
+        const remainingMs = evt.isRunning
+            ? Math.max(0, evt.remainingMs - (wallClockTimeMs - evt.timestamp))
+            : evt.remainingMs
 
-    return remainingMs
+        return { remainingMs, hasStarted: true }
+    }, [entries, wallClockTimeMs])
 }

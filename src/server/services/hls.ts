@@ -219,7 +219,7 @@ function spawnFFmpeg(hlsDir: string, key: string, inputFormat: string | null): C
     })
 
     ffmpeg.stderr?.on("data", (_d: Buffer) => {
-        console.log(`[FFmpeg:${key}]`, _d.toString().slice(0, 300))
+        // console.log(`[FFmpeg:${key}]`, _d.toString().slice(0, 300))
     })
 
     ffmpeg.on("error", (err) => {

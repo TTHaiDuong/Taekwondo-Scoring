@@ -1,3 +1,6 @@
+import { getRound } from "./match"
+import { addScoreEvent } from "./score"
+
 export type MatchTimer = {
     remainingMs: number
     interval?: NodeJS.Timeout
@@ -14,11 +17,29 @@ export type TimerEvent = {
     isRunning: boolean     // đồng hồ có đang chạy KỂ TỪ thời điểm này không
 }
 
-export const TIMER_HISTORY: Map<string, TimerEvent[]> = new Map()
+// MỚI: mỗi phần tử trong lịch sử là 1 "mốc thời gian" — event có thể null,
+// nghĩa là "tại đây, đồng hồ đã bị reset, CHƯA có trạng thái chạy/dừng thật
+// nào kể từ mốc này". Nhờ vẫn giữ timestamp riêng ở ngoài, binary search vẫn
+// hoạt động bình thường dù event bên trong là null.
+export type TimerHistoryEntry = {
+    timestamp: number
+    event: TimerEvent | null
+}
+
+export const TIMER_HISTORY: Map<string, TimerHistoryEntry[]> = new Map()
 
 function pushTimerEvent(courtId: string, remainingMs: number, isRunning: boolean) {
     const list = TIMER_HISTORY.get(courtId) ?? []
-    list.push({ timestamp: Date.now(), remainingMs, isRunning })
+    const ts = Date.now()
+    list.push({ timestamp: ts, event: { timestamp: ts, remainingMs, isRunning } })
+    TIMER_HISTORY.set(courtId, list)
+}
+
+// MỚI: đẩy một MỐC RESET — không phải TimerEvent thật, chỉ đánh dấu ranh
+// giới "đồng hồ vừa bị khởi tạo lại, chưa từng chạy kể từ đây".
+export function pushTimerReset(courtId: string) {
+    const list = TIMER_HISTORY.get(courtId) ?? []
+    list.push({ timestamp: Date.now(), event: null })
     TIMER_HISTORY.set(courtId, list)
 }
 
@@ -34,7 +55,7 @@ export function initTimer(io: any,
         isRunning: false
     })
 
-    pushTimerEvent(data.courtId, data.roundMs, false)
+    pushTimerReset(data.courtId)
     io.to(`court-${data.courtId}`).emit("timer:event:add", TIMER_HISTORY.get(data.courtId)!.at(-1))
 
     io.to(`court-${data.courtId}`).emit("timer:remainingMs:update", {
@@ -187,8 +208,9 @@ export default function initTimerChannel(io: any, socket: any) {
         callback(t.isRunning)
     })
 
-    socket.on("timer:remainingMs:update", (data: { courtId: string, remainingMs: number }) => {
+    socket.on("timer:remainingMs:update", (data: { courtId: string, remainingMs: number }, callback?: () => void) => {
         setRemaining(io, data.courtId, data.remainingMs)
+        callback?.()
     })
 
     socket.on("timer:roundMs:update", (data: { courtId: string, roundMs: number }) => {
@@ -201,8 +223,8 @@ export default function initTimerChannel(io: any, socket: any) {
         })
     })
 
-    socket.on("timer:events:get", (data: { courtId: string }, callback: (events: TimerEvent[]) => void) => {
-        callback(TIMER_HISTORY.get(data.courtId) ?? [])
+    socket.on("timer:events:get", (data: { courtId: string }, callback: (entries?: TimerHistoryEntry[]) => void) => {
+        callback(TIMER_HISTORY.get(data.courtId))
     })
 }
 
@@ -210,16 +232,16 @@ export function getTimerEventsInRange(
     courtId: string,
     fromMs: number,
     toMs: number
-): TimerEvent[] {
+): TimerHistoryEntry[] {
     const all = TIMER_HISTORY.get(courtId) ?? []
-    const result: TimerEvent[] = []
-    let lastBefore: TimerEvent | null = null
+    const result: TimerHistoryEntry[] = []
+    let lastBefore: TimerHistoryEntry | null = null
 
-    for (const evt of all) {
-        if (evt.timestamp < fromMs) {
-            lastBefore = evt
-        } else if (evt.timestamp <= toMs) {
-            result.push(evt)
+    for (const entry of all) {
+        if (entry.timestamp < fromMs) {
+            lastBefore = entry
+        } else if (entry.timestamp <= toMs) {
+            result.push(entry)
         } else {
             break
         }

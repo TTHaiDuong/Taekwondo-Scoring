@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { createContext, useCallback, useEffect, useRef, useState } from "react"
 import { getSingletonSocket, setAuthToken } from "@/scripts/global-client-io"
 import { PointType, RoundResult, RoundWinner, ScoreBreakdown, Side, calcTotalFromBreakdown, emptyBreakdown, inferRoundWinner } from "@/scripts/match-types"
 import MobileSetting, { createBinding } from "./MobileSetting"
@@ -19,7 +19,9 @@ import IvrPanel, { type IvrState, createDefaultIvrState } from "./IvrPanel"
 import TimePicker from "./TimePicker"
 import { JudgePointType } from "@/server/services/score"
 import { JudgePressStack } from "./JudgePress"
-import { motion, AnimatePresence, useDragControls, useMotionValue, useAnimation } from "framer-motion"
+import { motion, AnimatePresence, useDragControls, useMotionValue, useAnimation, variantPriorityOrder } from "framer-motion"
+import usePageVisibility from "./UsePageVisibility"
+import { useIsDesktop } from "./UseIsDesktop"
 
 // ── Fullscreen hook ───────────────────────────────────────────
 function useFullscreen() {
@@ -489,18 +491,23 @@ function ClockPanel(props: {
             props.mode === "countdown" ? "#F59E0B" :
                 props.mode === "break" ? "#60A5FA" : "#FFD700"
 
+    const matchColor =
+        props.isRunning && props.remainingMs % 1000 > 400
+            ? borderColor
+            : "white"
+
     const statusLabel =
         !props.isRunning && props.remainingMs === props.duration ? "BẮT ĐẦU" :
             props.isRunning ? "ĐANG CHẠY" :
                 props.remainingMs === 0 ? "HẾT GIỜ" : "TẠM DỪNG"
 
     const statusBg =
-        !props.isRunning && props.remainingMs === props.duration ? "bg-white/20" :
-            props.isRunning ? "bg-[#FFD700]" :
-                props.remainingMs === 0 ? "bg-red-500" : "bg-white/30"
+        !props.isRunning && props.remainingMs === props.duration ? "rgba(255,255,255,0.2)" :
+            props.isRunning ? "#FFD700" :
+                props.remainingMs === 0 ? "#EF4444" : "rgba(255,255,255,0.3)"
 
     const statusText =
-        props.isRunning ? "text-black" : "text-white"
+        props.isRunning ? "black" : "white"
 
     const roundLabel =
         props.mode === "break" ? "GIẢI LAO" :
@@ -514,7 +521,8 @@ function ClockPanel(props: {
             className="grid rounded-[10px] overflow-hidden select-none active:scale-95 transition-transform"
             style={{
                 gridTemplateRows: "1fr 2.5fr 1fr",
-                border: `2px solid ${props.isRunning ? borderColor : "white"}`,
+                border: `2px solid ${props.mode === "match" ? matchColor : borderColor}`,
+                transition: "border-color 0.4s ease",
             }}
         >
             <div className="flex justify-center items-center text-[10px] font-bold text-white/50 tracking-wider pt-[2px]">
@@ -524,12 +532,19 @@ function ClockPanel(props: {
                 className="flex justify-center items-center font-score font-bold leading-none tabular-nums"
                 style={{
                     fontSize: "clamp(1.6rem,9vw,3rem)",
-                    color: !props.isRunning && props.mode === "match" ? "white" : borderColor,
+                    color: props.mode === "match" ? matchColor : borderColor,
+                    transition: "color 0.4s ease",
                 }}
             >
                 {timeStr}
             </div>
-            <div className={`flex-center text-[9px] font-bold ${statusBg} ${statusText} tracking-wider`}>
+            <div
+                className={`flex-center text-[9px] font-bold tracking-wider`}
+                style={{
+                    color: statusText,
+                    backgroundColor: props.mode === "match" && props.isRunning ? matchColor : statusBg,
+                    transition: "background-color 0.4s ease"
+                }}>
                 {statusLabel}
             </div>
         </button>
@@ -674,6 +689,8 @@ export default function MobileOperator() {
     const [timePickerVisible, setTimePickerVisible] = useState(false)
     const [ptgDialogVisible, setPtgDialogVisible] = useState(false)
 
+    const isPageActive = usePageVisibility()
+
     // Sử dụng để cuộn thẻ chứa các Point Editor xuống dưới cùng
     const containerRef = useRef<HTMLDivElement>(null)
     useEffect(() => {
@@ -713,8 +730,8 @@ export default function MobileOperator() {
 
             socket.emit("rounds:get", { courtId }, (round?: RoundResult) => {
                 if (round) {
-                    setBlueScore(round.blueBreakdown)
-                    setRedScore(round.redBreakdown)
+                    setBlueScore(round.blueBreakdown || emptyBreakdown())
+                    setRedScore(round.redBreakdown || emptyBreakdown())
                     return
                 }
 
@@ -769,11 +786,11 @@ export default function MobileOperator() {
         else socket.once("connect", onConnect)
 
         socket.on("score:blue:update", (data: { breakdown: any }) => {
-            setBlueScore(data.breakdown)
+            setBlueScore(data.breakdown || emptyBreakdown())
         })
 
         socket.on("score:red:update", (data: { breakdown: any }) => {
-            setRedScore(data.breakdown)
+            setRedScore(data.breakdown || emptyBreakdown())
         })
 
         socket.on("score:reset", () => {
@@ -792,10 +809,6 @@ export default function MobileOperator() {
 
         socket.on("timer:roundMs:update", (data: { roundMs: number }) => {
             setRoundMs(data.roundMs)
-        })
-
-        socket.on("score:mode:update", (data: { mode: AppMode }) => {
-            setMode(data.mode)
         })
 
         // socket.on("round:winner:update", (d: { winner: Side }) => {
@@ -831,16 +844,47 @@ export default function MobileOperator() {
         })
     }
 
-    function toggleTimer() {
+    const toggleTimer = useCallback(() => {
         const socket = getSingletonSocket()
         if (timerRunning) {
             socket.emit("timer:stop", { courtId })
         } else if (remainingMs > 0) {
             socket.emit("timer:run", { courtId })
         } else {
-            socket.emit("timer:remainingMs:update", { courtId, remainingMs: roundMs })
+            setQuickAccessVisible(true)
+            setIsOpenClearScore(true)
         }
-    }
+    }, [timerRunning, remainingMs])
+
+    useEffect(() => {
+        function handleKeyDown(e: KeyboardEvent) {
+            if (e.code === "Space") {
+                e.preventDefault();
+                toggleTimer()
+            } else if (e.code === "Escape") {
+                setQuickAccessVisible(false)
+                setSettingVisible(false)
+                setTimePickerVisible(false)
+                setPtgDialogVisible(false)
+            } else if (e.key.toLowerCase() === "i") {
+                setSettingVisible(prev => {
+                    setQuickAccessVisible(false)
+                    return !prev
+                })
+            } else if (e.key.toLowerCase() === "u") {
+                setQuickAccessVisible(prev => {
+                    setSettingVisible(false)
+                    return !prev
+                })
+            }
+        }
+
+        window.addEventListener("keydown", handleKeyDown);
+
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [toggleTimer]);
 
     // ── Test mode overlay ──────────────────────────────────
     // ── IVR helpers ─────────────────────────────────────────────
@@ -856,376 +900,441 @@ export default function MobileOperator() {
         ? { outline: "3px solid #F59E0B", outlineOffset: "-3px", }
         : {}
 
+    const [isOpenClearScore, setIsOpenClearScore] = useState<boolean>(false)
+
+    useEffect(() => {
+        if (!quickAccessVisible) setIsOpenClearScore(false)
+    }, [quickAccessVisible])
+
+    const isDesktop = useIsDesktop()
+
     // ── Render ─────────────────────────────────────────────
     return (
-        <div
-            className="relative flex flex-col justify-between gap-[6px] w-screen h-dvh overflow-hidden select-none bg-[#111111]"
-            style={{
-                // background: `
-                //     linear-gradient(180deg, #00000000 0%, #00000050 20%, #000000 100%),
-                //     linear-gradient(270deg, #A30000 0%, #57004A 48%, #43005D 52%, #00009F 100%)
-                // `,
-                color: "white",
-                ...outerStyle
+        <UIContext
+            value={{
+                visible: isOpenClearScore,
+                setVisible: setIsOpenClearScore
             }}
         >
-            {/* Test mode banner */}
-            {isTest && (
-                <div className="absolute top-0 left-0 right-0 flex-center py-[3px]
-                    bg-amber-500/30 text-amber-300 text-[10px] font-bold tracking-widest z-10">
-                    TEST MODE — điểm không được tính thật
-                </div>
-            )}
-
-            {ptgDialogVisible &&
-                <PtgNoticeDialog
-                    winner={roundWinner.winner || undefined}
-                    onConfirm={() => setPtgDialogVisible(false)}
-                    onDismiss={() => setPtgDialogVisible(false)}
-                    totalBlue={roundWinner.totalBlue}
-                    totalRed={roundWinner.totalRed}
-                    gap={Math.abs(roundWinner.totalBlue - roundWinner.totalRed)}
-                />}
-
-            {/* Overlays */}
-            {settingVisible && (
-                <MobileSetting
-                    onClose={() => setSettingVisible(false)}
-                    roundMs={roundMs}
-                    onRoundMsChanged={setRoundMs}
-                    pointGap={pointGap}
-                    onPointGapChanged={newPt => {
-                        getSingletonSocket().emit("match:config:set", { courtId, config: { pointGap: newPt } })
-                        setPointGap(newPt)
-                    }}
-                    pointGapEnabled={pointGapEnabled}
-                    onApplyPTGChanged={v => {
-                        getSingletonSocket().emit("match:config:set", { courtId, config: { pointGapEnabled: v } })
-                        setPointGapEnabled(v)
-                    }}
-                />
-            )}
-
-            {quickAccessVisible &&
-                <QuickAccessSheet
-                    courtId={courtId}
-                    roundMs={roundMs}
-                    onClose={() => setQuickAccessVisible(false)}
-                    onClearScore={() => {
-                        const socket = getSingletonSocket()
-                        socket.emit("score:operator:clear", { courtId })
-                        socket.emit("timer:stop", { courtId }, () => {
-                            socket.emit("timer:remainingMs:update", {
-                                courtId,
-                                remainingMs: roundMs,
-                            })
-                        })
-                    }}
-                />
-            }
-
-            {/* IVR overlay */}
-            {ivrSide && (
-                <div className="fixed inset-0 z-[60] flex flex-col"
-                    style={{ background: "#111" }}>
-                    <IvrPanel
-                        state={ivrState}
-                        roundNo={roundNo}
-                        timeLabel={formatRemaining()}
-                        onClose={() => setIvrSide(null)}
-                        onChange={setIvrState}
-                    />
-                </div>
-            )}
-
-            {showGuide && <FullscreenGuide onClose={() => setShowGuide(false)} />}
-
-            {/* ── HEADER: trạng thái kết nối ── */}
-            <div className="flex items-center justify-between px-[12px] py-[6px]
-                bg-black/30 text-[11px]">
-                <div className="flex items-center gap-[6px] text-white/50">
-                    <WifiI className="h-[10px]" />
-                    <span>{latencyMs !== null ? `${latencyMs}ms` : "–"}</span>
-                    <span className="text-white/30">·</span>
-                    <span>Sân {courtId}</span>
-                </div>
-                <div className="flex items-center gap-[5px]">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                        <JudgeI
-                            key={i}
-                            className="h-[10px]"
-                            style={{ opacity: i < judgeCount ? 1 : 0.2 }}
-                        />
-                    ))}
-                </div>
-                <span className="text-white/30 text-[10px] truncate max-w-[100px]">
-                    Chung kết · 58KG
-                </span>
-            </div>
-
-
-            {timePickerVisible &&
+            <div className="flex justify-center w-screen h-dvh">
                 <div
-                    className="absolute w-full h-full p-[5px] bg-[#000000cb] flex flex-col gap-[50px] justify-center items-center"
-                    onClick={e => { if (e.target === e.currentTarget) setTimePickerVisible(false) }}
+                    className="relative flex flex-col justify-between gap-[6px] w-full max-w-[400px] h-full overflow-hidden select-none bg-[#111111]"
+                    style={{
+                        // background: `
+                        //     linear-gradient(180deg, #00000000 0%, #00000050 20%, #000000 100%),
+                        //     linear-gradient(270deg, #A30000 0%, #57004A 48%, #43005D 52%, #00009F 100%)
+                        // `,
+                        color: "white",
+                        filter: isPageActive ? "grayscale(0)" : (timerRunning ? (remainingMs % 1000 > 500 ? "grayscale(0.7)" : "grayscale(1)") : "grayscale(0.9)"),
+                        transition: "filter 0.4s ease",
+                        ...outerStyle
+                    }}
                 >
-                    <TimePicker
-                        initTimeMs={remainingMs}
-                        onSubmit={(ms) => {
-                            if (ms !== undefined) getSingletonSocket().emit("timer:remainingMs:update", { courtId, remainingMs: ms })
-                            setTimePickerVisible(false)
-                        }} />
 
-                    <button
-                        className="flex-center px-[20px] py-[14px] rounded-[12px] text-[13px]
+                    {/* Test mode banner */}
+                    {isTest && (
+                        <div className="absolute top-0 left-0 right-0 flex-center py-[3px]
+                    bg-amber-500/30 text-amber-300 text-[10px] font-bold tracking-widest z-10">
+                            TEST MODE — điểm không được tính thật
+                        </div>
+                    )}
+
+                    {ptgDialogVisible &&
+                        <PtgNoticeDialog
+                            winner={roundWinner.winner || undefined}
+                            onConfirm={() => setPtgDialogVisible(false)}
+                            onDismiss={() => setPtgDialogVisible(false)}
+                            totalBlue={roundWinner.totalBlue}
+                            totalRed={roundWinner.totalRed}
+                            gap={Math.abs(roundWinner.totalBlue - roundWinner.totalRed)}
+                        />}
+
+                    {/* Overlays */}
+                    {settingVisible && (
+                        <MobileSetting
+                            onClose={() => setSettingVisible(false)}
+                            roundMs={roundMs}
+                            onRoundMsChanged={setRoundMs}
+                            pointGap={pointGap}
+                            onPointGapChanged={newPt => {
+                                getSingletonSocket().emit("match:config:set", { courtId, config: { pointGap: newPt } })
+                                setPointGap(newPt)
+                            }}
+                            pointGapEnabled={pointGapEnabled}
+                            onApplyPTGChanged={v => {
+                                getSingletonSocket().emit("match:config:set", { courtId, config: { pointGapEnabled: v } })
+                                setPointGapEnabled(v)
+                            }}
+                        />
+                    )}
+
+                    {quickAccessVisible &&
+                        <QuickAccessSheet
+                            courtId={courtId}
+                            roundMs={roundMs}
+                            onClose={() => setQuickAccessVisible(false)}
+                            onClearScore={() => {
+                                setQuickAccessVisible(false)
+                                const socket = getSingletonSocket()
+                                socket.emit("timer:stop", { courtId }, () => {
+                                    socket.emit("timer:remainingMs:update", {
+                                        courtId,
+                                        remainingMs: roundMs,
+                                    }, () => {
+                                        socket.emit("score:operator:clear", { courtId })
+                                    })
+                                })
+                            }}
+                        />
+                    }
+
+                    {/* IVR overlay */}
+                    {ivrSide && (
+                        <div className="fixed inset-0 z-[60] flex flex-col"
+                            style={{ background: "#111" }}>
+                            <IvrPanel
+                                state={ivrState}
+                                roundNo={roundNo}
+                                timeLabel={formatRemaining()}
+                                onClose={() => setIvrSide(null)}
+                                onChange={setIvrState}
+                            />
+                        </div>
+                    )}
+
+                    {showGuide && <FullscreenGuide onClose={() => setShowGuide(false)} />}
+
+                    {/* ── HEADER: trạng thái kết nối ── */}
+                    <div className="flex items-center justify-between px-[12px] py-[6px]
+                bg-black/30 text-[11px]">
+                        <div className="flex items-center gap-[6px] text-white/50">
+                            <WifiI className="h-[10px]" />
+                            <span>{latencyMs !== null ? `${latencyMs}ms` : "–"}</span>
+                            <span className="text-white/30">·</span>
+                            <span>Sân {courtId}</span>
+                        </div>
+                        <div className="flex items-center gap-[5px]">
+                            {Array.from({ length: 3 }).map((_, i) => (
+                                <JudgeI
+                                    key={i}
+                                    className="h-[10px]"
+                                    style={{ opacity: i < judgeCount ? 1 : 0.2 }}
+                                />
+                            ))}
+                        </div>
+                        <span className="text-white/30 text-[10px] truncate max-w-[100px]">
+                            Chung kết · 58KG
+                        </span>
+                    </div>
+
+
+                    {timePickerVisible &&
+                        <div
+                            className="absolute w-full h-full p-[5px] bg-[#000000cb] flex flex-col gap-[50px] justify-center items-center"
+                            onClick={e => { if (e.target === e.currentTarget) setTimePickerVisible(false) }}
+                        >
+                            <TimePicker
+                                initTimeMs={remainingMs}
+                                onSubmit={(ms) => {
+                                    if (ms !== undefined) getSingletonSocket().emit("timer:remainingMs:update", { courtId, remainingMs: ms })
+                                    setTimePickerVisible(false)
+                                }} />
+
+                            <button
+                                className="flex-center px-[20px] py-[14px] rounded-[12px] text-[13px]
                         font-semibold bg-white text-black active:scale-95 transition-transform
                         min-w-[80px] shadow-md"
-                        onClick={() => {
-                            getSingletonSocket().emit("timer:remainingMs:update", { courtId, remainingMs: roundMs })
-                            setTimePickerVisible(false)
-                        }}
-                    >
-                        Đặt lại {`${getTimeString(roundMs)}s`}
-                    </button>
-                </div>
-            }
+                                onClick={() => {
+                                    getSingletonSocket().emit("timer:remainingMs:update", { courtId, remainingMs: roundMs })
+                                    setTimePickerVisible(false)
+                                }}
+                            >
+                                Đặt lại {`${getTimeString(roundMs)}s`}
+                            </button>
+                        </div>
+                    }
 
-            <div className="flex flex-col gap-[20px]">
-                {/* ── SCORE + CLOCK ── */}
-                <div
-                    className="grid px-[0px]"
-                    style={{
-                        gridTemplateColumns: "1fr 96px 1fr",
-                        gap: "0 4px",
-                    }}
-                >
-                    {/* Round wins — blue */}
-                    <RoundIndicator
-                        currentRound={roundNo}
-                        blueWins={blueWins}
-                        redWins={redWins}
-                        side="BLUE"
-                    />
-                    <div />
-                    {/* Round wins — red */}
-                    <RoundIndicator
-                        currentRound={roundNo}
-                        blueWins={blueWins}
-                        redWins={redWins}
-                        side="RED"
-                    />
+                    <div className="flex flex-col gap-[20px]">
+                        {/* ── SCORE + CLOCK ── */}
+                        <div
+                            className="grid px-[0px]"
+                            style={{
+                                gridTemplateColumns: "1fr 96px 1fr",
+                                gap: "0 4px",
+                            }}
+                        >
+                            {/* Round wins — blue */}
+                            <RoundIndicator
+                                currentRound={roundNo}
+                                blueWins={blueWins}
+                                redWins={redWins}
+                                side="BLUE"
+                            />
+                            <div />
+                            {/* Round wins — red */}
+                            <RoundIndicator
+                                currentRound={roundNo}
+                                blueWins={blueWins}
+                                redWins={redWins}
+                                side="RED"
+                            />
 
-                    {/* Score blue */}
-                    <ScorePanel
-                        side="blue"
-                        total={roundWinner.totalBlue}
-                        isLeading={roundWinner.winner === "blue"}
-                        cameraOn={ivrState.blue.remaining > 0}
-                        onCameraClick={() => setIvrSide("BLUE")}
-                    />
+                            {/* Score blue */}
+                            <ScorePanel
+                                side="blue"
+                                total={roundWinner.totalBlue}
+                                isLeading={roundWinner.winner === "blue"}
+                                cameraOn={ivrState.blue.remaining > 0}
+                                onCameraClick={() => setIvrSide("BLUE")}
+                            />
 
-                    {/* Clock */}
-                    <ClockPanel
-                        roundNo={roundNo}
-                        remainingMs={remainingMs}
-                        duration={roundMs}
-                        isRunning={timerRunning}
-                        mode={mode}
-                        onToggle={() => {
-                            if (timerRunning)
-                                getSingletonSocket().emit("timer:stop", { courtId }, () => {
-                                    setTimePickerVisible(true)
-                                })
-                            else
-                                setTimePickerVisible(true)
-                        }}
-                    />
+                            {/* Clock */}
+                            <ClockPanel
+                                roundNo={roundNo}
+                                remainingMs={remainingMs}
+                                duration={roundMs}
+                                isRunning={timerRunning}
+                                mode={mode}
+                                onToggle={() => {
+                                    if (timerRunning)
+                                        getSingletonSocket().emit("timer:stop", { courtId }, () => {
+                                            setTimePickerVisible(true)
+                                        })
+                                    else
+                                        setTimePickerVisible(true)
+                                }}
+                            />
 
-                    {/* Score red */}
-                    <ScorePanel
-                        side="red"
-                        total={roundWinner.totalRed}
-                        isLeading={roundWinner.winner === "red"}
-                        cameraOn={ivrState.red.remaining > 0}
-                        onCameraClick={() => setIvrSide("RED")}
-                    />
-                </div>
+                            {/* Score red */}
+                            <ScorePanel
+                                side="red"
+                                total={roundWinner.totalRed}
+                                isLeading={roundWinner.winner === "red"}
+                                cameraOn={ivrState.red.remaining > 0}
+                                onCameraClick={() => setIvrSide("RED")}
+                            />
+                        </div>
 
-                {/* ── TIMER CONTROLS ── */}
-                <div className="grid grid-cols-[1fr_1fr_1fr] px-[10px] py-[15px]
+                        {/* ── TIMER CONTROLS ── */}
+                        <div className="grid grid-cols-[1fr_1fr_1fr] px-[10px] py-[15px]
                 bg-white/5 rounded-[12px] mx-[8px]">
 
-                    {/* Hiệp indicator */}
-                    <div className="flex flex-col gap-[3px]">
-                        <span className="text-[9px] font-semibold text-white/30 tracking-wider">HIỆP</span>
-                        <div className="flex items-center gap-[4px]">
-                            {[1, 2, 3].map(i => (
-                                <div
-                                    key={i}
-                                    className={`flex-center w-[18px] h-[18px] rounded-full text-[9px] font-bold
+                            {/* Hiệp indicator */}
+                            <div className="flex flex-col gap-[3px]">
+                                <span className="text-[9px] font-semibold text-white/30 tracking-wider">HIỆP</span>
+                                <div className="flex items-center gap-[4px]">
+                                    {[1, 2, 3].map(i => (
+                                        <div
+                                            key={i}
+                                            className={`flex-center w-[18px] h-[18px] rounded-full text-[9px] font-bold
                                     transition-all
                                     ${i === roundNo
-                                            ? "bg-amber-400 text-black"
-                                            : i < roundNo
-                                                ? "bg-white/25 text-white/60"
-                                                : "bg-white/8 text-white/25"
-                                        }`}
-                                >
-                                    {i}
+                                                    ? "bg-amber-400 text-black"
+                                                    : i < roundNo
+                                                        ? "bg-white/25 text-white/60"
+                                                        : "bg-white/8 text-white/25"
+                                                }`}
+                                        >
+                                            {i}
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                            </div>
+
+                            {/* Play/Stop button */}
+                            <button
+                                onClick={toggleTimer}
+                                className="relative flex-center flex-col px-[20px] py-[18px] rounded-[12px] text-[13px]
+                        font-semibold text-black active:scale-95 transition-transform
+                        min-w-[80px] shadow-md"
+                                style={{
+                                    backgroundColor:
+                                        mode === "match" ? (timerRunning && remainingMs % 1000 > 400 ? "#FFD700" : "white")
+                                            : timerRunning ? "#FFD700" : "white",
+                                    transition: "background-color 0.4s ease"
+                                }}
+                            >
+                                <span>{timerRunning ? "Dừng lại" :
+                                    remainingMs === roundMs ? "Bắt đầu" :
+                                        remainingMs <= 0 ? "Đặt lại" : "Tiếp tục"}
+                                </span>
+                                {isDesktop &&
+                                    <span className="text-black/50 text-[0.6rem] h-[0.5rem]">
+                                        [Space]
+                                    </span>}
+                            </button>
+
+                            {/* Mode selector */}
+                            <div className="flex flex-col items-end gap-[3px]">
+                                <span className="text-[9px] font-semibold text-white/30 tracking-wider">CHẾ ĐỘ</span>
+                                <ModeSelector current={mode} onChange={(m) => {
+                                    const socket = getSingletonSocket()
+                                    if (m === "test")
+                                        socket.emit("test:open", { courtId }, () => {
+                                            setMode("test")
+                                        })
+                                    else
+                                        socket.emit("test:close", { courtId }, () => {
+                                            setMode(m)
+                                        })
+                                }} />
+                            </div>
                         </div>
                     </div>
 
-                    {/* Play/Stop button */}
-                    <button
-                        onClick={toggleTimer}
-                        className="flex-center px-[20px] py-[18px] rounded-[12px] text-[13px]
-                        font-semibold bg-white text-black active:scale-95 transition-transform
-                        min-w-[80px] shadow-md"
-                    >
-                        {timerRunning ? "Dừng lại" :
-                            remainingMs === roundMs ? "Bắt đầu" :
-                                remainingMs <= 0 ? "Đặt lại" : "Tiếp tục"}
-                    </button>
 
-                    {/* Mode selector */}
-                    <div className="flex flex-col items-end gap-[3px]">
-                        <span className="text-[9px] font-semibold text-white/30 tracking-wider">CHẾ ĐỘ</span>
-                        <ModeSelector current={mode} onChange={(m) => {
-                            const socket = getSingletonSocket()
-                            if (m === "test") socket.emit("test:open", { courtId })
-                            else socket.emit("test:close", { courtId })
-                        }} />
-                    </div>
-                </div>
-            </div>
+                    {/* ── POINT EDITORS ── */}
+                    <div className="flex-1 flex flex-col gap-[10px] px-[8px] min-h-0">
 
-
-            {/* ── POINT EDITORS ── */}
-            <div className="flex-1 flex flex-col gap-[10px] px-[8px] min-h-0">
-
-                <div className="grid grid-cols-[1fr_1fr] gap-x-[6px] gap-y-[4px]">
-                    <div className="flex items-center px-[14px] rounded-[8px] gap-[10px] min-w-0 bg-white/5">
-                        <span className="w-[18px] text-[16px] font-bold text-white/60">
-                            GJ
-                        </span>
-                        <div className="w-[25px]" />
-                        <span className="flex-1 text-center font-bold text-amber-300
+                        <div className="grid grid-cols-[1fr_1fr] gap-x-[6px] gap-y-[4px]">
+                            <div className="flex items-center px-[14px] rounded-[8px] gap-[10px] min-w-0 bg-white/5">
+                                <span className="w-[18px] text-[16px] font-bold text-white/60">
+                                    GJ
+                                </span>
+                                <div className="w-[25px]" />
+                                <span className="flex-1 text-center font-bold text-amber-300
                             font-variant-numeric tabular-nums"
-                            style={{ fontSize: scoreSize, color: blueScore.gamjeom + blueScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
-                            {blueScore.gamjeom + blueScore.eejeom}
-                        </span>
-                        <div className="w-[25px]" />
-                    </div>
+                                    style={{ fontSize: scoreSize, color: blueScore.gamjeom + blueScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
+                                    {blueScore.gamjeom + blueScore.eejeom}
+                                </span>
+                                <div className="w-[25px]" />
+                            </div>
 
-                    <div className="flex flex-row-reverse items-center px-[14px] rounded-[8px] gap-[10px] min-w-0 bg-white/5">
-                        <span className="flex flex-row-reverse w-[18px] text-[16px] font-bold text-white/60">
-                            GJ
-                        </span>
-                        <div className="w-[25px]" />
-                        <span className="flex-1 text-center font-bold text-amber-300
+                            <div className="flex flex-row-reverse items-center px-[14px] rounded-[8px] gap-[10px] min-w-0 bg-white/5">
+                                <span className="flex flex-row-reverse w-[18px] text-[16px] font-bold text-white/60">
+                                    GJ
+                                </span>
+                                <div className="w-[25px]" />
+                                <span className="flex-1 text-center font-bold text-amber-300
                             font-variant-numeric tabular-nums"
-                            style={{ fontSize: scoreSize, color: redScore.gamjeom + redScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
-                            {redScore.gamjeom + redScore.eejeom}
-                        </span>
-                        <div className="w-[25px]" />
-                    </div>
+                                    style={{ fontSize: scoreSize, color: redScore.gamjeom + redScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
+                                    {redScore.gamjeom + redScore.eejeom}
+                                </span>
+                                <div className="w-[25px]" />
+                            </div>
 
-                    <GjRow
-                        label="1"
-                        side="BLUE"
-                        value={redScore.gamjeom}
-                        onPlus={() => emitScore("red", "gamjeom", "increase")}
-                        onMinus={() => emitScore("red", "gamjeom", "decrease")}
-                        disabled={!canScore}
-                    />
-                    <GjRow
-                        label="1"
-                        side="RED"
-                        value={blueScore.gamjeom}
-                        onPlus={() => emitScore("blue", "gamjeom", "increase")}
-                        onMinus={() => emitScore("blue", "gamjeom", "decrease")}
-                        disabled={!canScore}
-                    />
-                    <GjRow
-                        label="2"
-                        side="BLUE"
-                        value={redScore.eejeom}
-                        onPlus={() => emitScore("red", "eejeom", "increase")}
-                        onMinus={() => emitScore("red", "eejeom", "decrease")}
-                        disabled={!canScore}
-                    />
-                    <GjRow
-                        label="2"
-                        side="RED"
-                        value={blueScore.eejeom}
-                        onPlus={() => emitScore("blue", "eejeom", "increase")}
-                        onMinus={() => emitScore("blue", "eejeom", "decrease")}
-                        disabled={!canScore}
-                    />
-                </div>
-
-                <div ref={containerRef} className="flex-1 flex gap-[6px] overflow-y-auto">
-                    <div className="flex-1 flex flex-col gap-[4px] min-w-0">
-                        {POINT_ROWS.map(row => (
-                            <ScoreRow
-                                key={row.type}
+                            <GjRow
+                                label="1"
                                 side="BLUE"
-                                type={row.type}
-                                icon={row.icon}
-                                label={row.label}
-                                value={blueScore[row.type]}
-                                onPlus={() => emitScore("blue", row.type, "increase")}
-                                onMinus={() => emitScore("blue", row.type, "decrease")}
+                                value={redScore.gamjeom}
+                                onPlus={() => emitScore("red", "gamjeom", "increase")}
+                                onMinus={() => emitScore("red", "gamjeom", "decrease")}
                                 disabled={!canScore}
                             />
-                        ))}
-                    </div>
-
-                    <div className="flex-1 flex flex-col gap-[4px] min-w-0">
-                        {POINT_ROWS.map(row => (
-                            <ScoreRow
-                                key={row.type}
+                            <GjRow
+                                label="1"
                                 side="RED"
-                                type={row.type}
-                                icon={row.icon}
-                                label={row.label}
-                                value={redScore[row.type]}
-                                onPlus={() => emitScore("red", row.type, "increase")}
-                                onMinus={() => emitScore("red", row.type, "decrease")}
+                                value={blueScore.gamjeom}
+                                onPlus={() => emitScore("blue", "gamjeom", "increase")}
+                                onMinus={() => emitScore("blue", "gamjeom", "decrease")}
                                 disabled={!canScore}
                             />
-                        ))}
+                            <GjRow
+                                label="2"
+                                side="BLUE"
+                                value={redScore.eejeom}
+                                onPlus={() => emitScore("red", "eejeom", "increase")}
+                                onMinus={() => emitScore("red", "eejeom", "decrease")}
+                                disabled={!canScore}
+                            />
+                            <GjRow
+                                label="2"
+                                side="RED"
+                                value={blueScore.eejeom}
+                                onPlus={() => emitScore("blue", "eejeom", "increase")}
+                                onMinus={() => emitScore("blue", "eejeom", "decrease")}
+                                disabled={!canScore}
+                            />
+                        </div>
+
+                        <div ref={containerRef} className="flex-1 flex gap-[6px] overflow-y-auto">
+                            <div className="flex-1 flex flex-col gap-[4px] min-w-0">
+                                {POINT_ROWS.map(row => (
+                                    <ScoreRow
+                                        key={row.type}
+                                        side="BLUE"
+                                        type={row.type}
+                                        icon={row.icon}
+                                        label={row.label}
+                                        value={blueScore[row.type]}
+                                        onPlus={() => emitScore("blue", row.type, "increase")}
+                                        onMinus={() => emitScore("blue", row.type, "decrease")}
+                                        disabled={!canScore}
+                                    />
+                                ))}
+                            </div>
+
+                            <div className="flex-1 flex flex-col gap-[4px] min-w-0">
+                                {POINT_ROWS.map(row => (
+                                    <ScoreRow
+                                        key={row.type}
+                                        side="RED"
+                                        type={row.type}
+                                        icon={row.icon}
+                                        label={row.label}
+                                        value={redScore[row.type]}
+                                        onPlus={() => emitScore("red", row.type, "increase")}
+                                        onMinus={() => emitScore("red", row.type, "decrease")}
+                                        disabled={!canScore}
+                                    />
+                                ))}
+                            </div>
+
+                        </div>
+
                     </div>
 
+                    {/* ── BOTTOM TOOLBAR ── */}
+                    <div className="grid grid-cols-[1fr_1fr_1fr] px-[16px] py-[10px] bg-black/40">
+                        {/* Fullscreen button */}
+                        <FullscreenToggle onToggle={toggleFullscreen} isFullscreen={isFullscreen} />
+
+                        {/* Quick Access pill */}
+                        <button
+                            className="flex justify-center items-start active:opacity-60 transition-opacity pt-[2px]"
+                            onClick={() => setQuickAccessVisible(true)}
+                        >
+                            <div className="rounded-full w-[50px] h-[5px] bg-white/30" />
+                        </button>
+
+                        {/* Settings */}
+                        <button
+                            className="flex justify-center items-center active:opacity-60 transition-opacity"
+                            onClick={() => setSettingVisible(true)}
+                        >
+                            <NutI className="h-[18px] text-white/50" />
+                        </button>
+                    </div>
                 </div>
-
             </div>
-
-            {/* ── BOTTOM TOOLBAR ── */}
-            <div className="grid grid-cols-[1fr_1fr_1fr] px-[16px] py-[10px] bg-black/40">
-                {/* Fullscreen button */}
-                <FullscreenToggle onToggle={toggleFullscreen} isFullscreen={isFullscreen} />
-
-                {/* Quick Access pill */}
-                <button
-                    className="flex justify-center items-start active:opacity-60 transition-opacity pt-[2px]"
-                    onClick={() => setQuickAccessVisible(true)}
-                >
-                    <div className="rounded-full w-[50px] h-[5px] bg-white/30" />
-                </button>
-
-                {/* Settings */}
-                <button
-                    className="flex justify-center items-center active:opacity-60 transition-opacity"
-                    onClick={() => setSettingVisible(true)}
-                >
-                    <NutI className="h-[18px] text-white/50" />
-                </button>
-            </div>
-        </div>
+        </UIContext>
     )
+}
+
+type UIContextType = {
+    visible: boolean;
+    setVisible: React.Dispatch<React.SetStateAction<boolean>>;
+};
+
+export const UIContext = createContext<UIContextType>(null!);
+
+export function UIProvider({
+    children,
+}: {
+    children: React.ReactNode;
+}) {
+    const [visible, setVisible] = useState(false);
+
+    return (
+        <UIContext.Provider
+            value={{
+                visible,
+                setVisible,
+            }}
+        >
+            {children}
+        </UIContext.Provider>
+    );
 }
 
 function QuickAccessSheet(props: {
@@ -1269,7 +1378,7 @@ function QuickAccessSheet(props: {
 
     return (
         <motion.div
-            className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60"
+            className="absolute inset-0 z-50 flex flex-col justify-end bg-black/60"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -1281,7 +1390,7 @@ function QuickAccessSheet(props: {
             <motion.div
                 ref={sheetRef}
                 className="flex flex-col rounded-t-[20px] bg-[#111] overflow-hidden"
-                style={{ height: "85dvh", touchAction: "pan-y" }}
+                style={{ height: "80dvh", touchAction: "pan-y" }}
                 initial={{ y: "100%" }}
                 animate={sheetControls}
                 exit={{ y: "100%" }}

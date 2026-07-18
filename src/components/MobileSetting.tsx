@@ -468,7 +468,7 @@ export default function MobileSetting(props: {
 
     return (
         <>
-            <div className="fixed inset-0 flex flex-col w-full h-full z-[100]"
+            <div className="absolute inset-0 flex flex-col w-full h-full z-[100]"
                 style={{ background: "#111" }}>
 
                 {/* Header */}
