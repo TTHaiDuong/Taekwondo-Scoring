@@ -7,6 +7,7 @@ import { ScoreEvent } from "@/scripts/match-types"
 import { getSingletonSocket } from "@/scripts/global-client-io"
 import { getTimeString } from "@/components/MobileOperator"
 import usePageVisibility from "@/components/UsePageVisibility"
+import useVideoContentRect from "@/components/UseVideoContentRect"
 
 // ============================================================
 // VIEWER — HLS-ONLY, kiểu YouTube Live
@@ -87,6 +88,14 @@ function QualitySelector(props: { levels: Level[]; current: number; onChange: (l
     )
 }
 
+function fmtWallClock(ms: number): string {
+    const d = new Date(ms)
+    const hh = d.getHours().toString().padStart(2, "0")
+    const mm = d.getMinutes().toString().padStart(2, "0")
+    const ss = d.getSeconds().toString().padStart(2, "0")
+    return `${hh}:${mm}:${ss}`
+}
+
 function SeekBar(props: {
     positionSec: number
     windowStartSec: number
@@ -96,7 +105,8 @@ function SeekBar(props: {
     onScrubStart: () => void
     onScrubEnd: () => void
     isLiveEdge?: boolean
-    isScrubbing: boolean   // MỚI: trạng thái thật từ cha (đã settle hay chưa)
+    isScrubbing: boolean
+    startedAt: number | null   // MỚI — epoch ms lúc camera bắt đầu quay, để suy ra giờ thực
 }) {
     const barRef = useRef<HTMLDivElement>(null)
     const [isDragging, setDragging] = useState(false)
@@ -105,17 +115,12 @@ function SeekBar(props: {
     const total = Math.max(0.001, props.windowEndSec - props.windowStartSec)
     const committedPercent = Math.min(100, Math.max(0, ((props.positionSec - props.windowStartSec) / total) * 100))
 
-    // CHỈ xóa preview khi cha xác nhận đã ổn định (isScrubbing chuyển false)
-    // — không xóa ngay lúc pointerup, tránh khoảng hở hiển thị vị trí CŨ
-    // trước khi positionSec kịp cập nhật, gây "nhảy 2 lần".
     useEffect(() => {
         if (!props.isScrubbing && previewPct !== null) {
             setPreviewPct(null)
         }
     }, [props.isScrubbing])
 
-    // displayPercent giờ ưu tiên previewPct bất kể isDragging hay không —
-    // miễn previewPct còn tồn tại (tức parent chưa xác nhận settle xong).
     const displayPercent = previewPct !== null
         ? previewPct
         : (props.isLiveEdge ? 100 : committedPercent)
@@ -146,13 +151,26 @@ function SeekBar(props: {
         const sec = props.windowStartSec + (pct / 100) * total
         props.onScrubMove(sec, true)
         setDragging(false)
-        // KHÔNG setPreviewPct(null) ở đây nữa — để nguyên giá trị cuối cùng
-        // hiển thị liên tục cho tới khi effect ở trên tự xóa (khi
-        // props.isScrubbing thực sự chuyển về false).
         props.onScrubEnd()
     }
 
     const isLive = props.isLiveEdge ?? false
+
+    // Vị trí (giây, tính từ windowStartSec) đang được HIỂN THỊ — ưu tiên
+    // previewPct lúc đang kéo, giống hệt logic hiện có của chuỗi thời gian
+    // tương đối bên dưới, để 2 dòng chữ luôn đồng bộ với nhau.
+    const displaySec = previewPct !== null
+        ? (previewPct / 100) * total
+        : (props.positionSec - props.windowStartSec)
+
+    // Giờ thực = mốc bắt đầu quay (startedAt) + vị trí hiện tại trong cửa
+    // sổ DVR (windowStartSec + displaySec) — CHÚ Ý cộng thêm windowStartSec
+    // vì displaySec chỉ là khoảng lệch so với đầu cửa sổ, không phải mốc 0
+    // tuyệt đối của toàn bộ bản ghi (windowStartSec trôi dần khi server xoá
+    // segment cũ khỏi playlist).
+    const wallClockStr = props.startedAt !== null
+        ? fmtWallClock(props.startedAt + (props.windowStartSec + displaySec) * 1000)
+        : null
 
     return (
         <div className="flex flex-col gap-[4px] w-full">
@@ -170,23 +188,19 @@ function SeekBar(props: {
                     style={{ left: `calc(${displayPercent}% - 7px)` }} />
             </div>
             <div className="flex justify-between text-[11px] text-white/40 font-mono">
-                <span>
-                    {previewPct !== null
-                        ? fmtClock((previewPct / 100) * total)
-                        : fmtClock(props.positionSec - props.windowStartSec)}
+                <span className="flex items-center gap-[6px]">
+                    {fmtClock(displaySec)}
                 </span>
                 <span className="flex items-center gap-[6px]">
+                    {wallClockStr && <span className="text-white/25">({wallClockStr})</span>}
+                    <div className="w-[1rem]" />
                     {isLive && <span className="text-red-400 font-bold">● TRỰC TIẾP</span>}
-                    {/* Tổng thời lượng camera đã quay được — lấy từ windowEndSec,
-                        vì PTS liên tục từ lúc FFmpeg bắt đầu encode, không bị ảnh
-                        hưởng bởi việc server xóa bớt segment cũ khỏi playlist. */}
                     <span>{fmtClock(props.displayTotalSec)}</span>
                 </span>
             </div>
         </div>
     )
 }
-
 function CameraControls(props: {
     zoom: number; paused: boolean
     onZoom: (dir: 1 | -1) => void
@@ -562,6 +576,7 @@ export default function Viewer() {
     }, [activeCameraId, courtId])
 
     const jumpLive = useCallback(() => {
+        if (isFollowingLive) return
         const video = videoRef.current
         if (!video || !video.seekable || video.seekable.length === 0) return
         wasPlayingRef.current = true
@@ -569,7 +584,7 @@ export default function Viewer() {
         requestScrubSeek(video.seekable.end(0), true)
         setSpeedState(1)
         video.playbackRate = 1
-    }, [requestScrubSeek, setLiveMode])
+    }, [requestScrubSeek, setLiveMode, isFollowingLive])
 
     const togglePlay = useCallback(() => {
         const video = videoRef.current
@@ -738,15 +753,18 @@ export default function Viewer() {
         : null
 
     const currentScore = useScoreOverlay(courtId, wallClockTimeMs)
-    const { remainingMs: timerRemainingMs, hasStarted } = useTimerOverlay(courtId, wallClockTimeMs)
+    const { remainingMs: timerRemainingMs, hasStarted, isRunning } = useTimerOverlay(courtId, wallClockTimeMs)
 
     const isPageActive = usePageVisibility()
     useEffect(() => {
         if (!isPageActive) jumpLive()
     }, [isPageActive])
 
+    const containerRef = useRef<HTMLDivElement>(null)   // MỚI
+    const videoRect = useVideoContentRect(containerRef, videoRef)   // MỚI
+
     return (
-        <div className="fixed inset-0 bg-black flex flex-col overflow-hidden select-none"
+        <div ref={containerRef} className="fixed inset-0 bg-black flex flex-col overflow-hidden select-none"
             onPointerMove={bumpControlsVisible} onPointerDown={bumpControlsVisible}>
 
             <video ref={videoRef} muted={muted} playsInline autoPlay
@@ -757,6 +775,8 @@ export default function Viewer() {
                 timerRemainingMs={timerRemainingMs}
                 isReplay={!isFollowingLive}
                 hasStarted={hasStarted}
+                videoRect={videoRect}   // MỚI
+                isRunning={isRunning}   // MỚI
             />
 
             <div className={`absolute top-0 left-0 right-0 z-10 flex flex-col transition-opacity duration-300
@@ -803,6 +823,7 @@ export default function Viewer() {
                         isLiveEdge={isFollowingLive}
                         onScrubMove={requestScrubSeek}
                         isScrubbing={isScrubbing}
+                        startedAt={activeRecording?.startedAt ?? null}   // MỚI
                     />
 
                     <div className="flex items-center justify-between gap-[10px]">
@@ -920,48 +941,22 @@ function AthleteRow(props: {
     score: number
     flatColor: string
     isLeading: boolean
+    rowHeight: number
+    scoreBoxWidth: number
+    scoreFontSize: number
+    athleteName: string
 }) {
     return (
-        <div
-            className="flex items-stretch"
-            style={{ height: "clamp(22px, 2.5vw, 40px)" }}
-        >
-            {/* Cờ quốc gia — để trống tạm thời */}
-            <div
-                className="flex items-center justify-center shrink-0"
-                style={{ width: "clamp(20px, 2.2vw, 34px)", padding: "0 clamp(3px, 0.4vw, 6px)" }}
-            >
-                <div
-                    className="rounded-[2px] bg-white/10 border border-white/15"
-                    style={{ width: "clamp(13px, 1.4vw, 22px)", height: "clamp(9px, 1vw, 15px)" }}
-                />
+        <div className="flex items-stretch" style={{ height: props.rowHeight }}>
+            <div className="flex items-center justify-center shrink-0" style={{ width: props.rowHeight * 0.85, padding: `0 ${props.rowHeight * 0.15}px` }}>
+                <div className="rounded-[2px] bg-white/10 border border-white/15"
+                    style={{ width: props.rowHeight * 0.55, height: props.rowHeight * 0.4 }} />
             </div>
-
-            {/* Tên VĐV — để trống tạm thời */}
             <div className="flex-1 min-w-0 flex items-center">
-                <span
-                    className="text-white font-bold uppercase tracking-wide truncate opacity-40"
-                    style={{ fontSize: "clamp(8px, 0.85vw, 13px)" }}
-                >
-                    &nbsp;
-                </span>
+                <span className="text-white font-bold uppercase tracking-wide truncate opacity-40" style={{ fontSize: props.rowHeight * 0.34 }}>{props.athleteName}</span>
             </div>
-
-            {/* Khối điểm số — màu PHẲNG */}
-            <div
-                className="flex items-center justify-center shrink-0"
-                style={{
-                    width: "clamp(24px, 2.5vw, 40px)",
-                    backgroundColor: props.flatColor,
-                }}
-            >
-                <span
-                    className="font-black tabular-nums"
-                    style={{
-                        fontSize: "clamp(12px, 1.25vw, 20px)",
-                        color: props.isLeading ? "#FFD700" : "white"
-                    }}
-                >
+            <div className="flex items-center justify-center shrink-0" style={{ width: props.scoreBoxWidth, backgroundColor: props.flatColor }}>
+                <span className="font-black tabular-nums" style={{ fontSize: props.scoreFontSize, color: props.isLeading ? "#FFD700" : "white" }}>
                     {props.score}
                 </span>
             </div>
@@ -974,12 +969,13 @@ function ScoreOverlay(props: {
     timerRemainingMs: number | null
     roundNo?: number
     matchNo?: number
-    isReplay?: boolean   // MỚI: true khi đang tua lại (không ở live edge)
+    isReplay?: boolean
     hasStarted: boolean
+    videoRect: { left: number; top: number; width: number; height: number } | null
+    isRunning: boolean   // MỚI
 }) {
-    if (!props.hasStarted) return null
+    if (!props.hasStarted || !props.videoRect) return null
 
-    // Dùng điểm mặc định 0-0 khi chưa có ScoreEvent thật nào.
     const s: Pick<ScoreEvent, "redScore" | "blueScore" | "leadingSide"> =
         props.score ?? { redScore: 0, blueScore: 0, leadingSide: null }
 
@@ -987,88 +983,153 @@ function ScoreOverlay(props: {
         ? getTimeString(props.timerRemainingMs)
         : "0:00"
 
+    const isTimeUp = props.timerRemainingMs !== null && props.timerRemainingMs <= 0
+    const isPaused = !props.isRunning && !isTimeUp   // tạm dừng giữa chừng, KHÔNG phải hết giờ
+
+    const { width: vw, height: vh } = props.videoRect
+
+    // ── Bước 1: hệ số scale GỐC theo chiều cao video, có sàn/trần tuyệt
+    // đối để overlay không bao giờ bé/to bất thường dù vh cực nhỏ/cực lớn.
+    const MIN_SCALE = 40    // ứng với video rất thấp (vd cửa sổ thu nhỏ)
+    const MAX_SCALE = 90    // ứng với video rất cao (vd fullscreen 4K)
+    const rawScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, vh * 0.09))
+
+    // ── Bước 2: TOÀN BỘ layout của overlay là các TỈ LỆ CỐ ĐỊNH nhân với
+    // scale — nghĩa là width luôn tỉ lệ đúng với height của overlay theo
+    // đúng 1 "khuôn hình" thiết kế, không tính riêng lẻ từng phần tử theo
+    // vh nữa (tránh méo tỉ lệ khi vh thay đổi).
+    const clockWidthRatio = 1.7      // clockWidth = scale * 1.7
+    const rowHeightRatio = 0.8
+    const panelMinWidthRatio = 3.5   // panel (2 hàng VĐV) rộng tối thiểu = scale * 3.2
+
+    // Tổng chiều rộng ước tính của TOÀN BỘ khối overlay (clock + panel),
+    // dùng để kiểm tra ràng buộc theo chiều rộng video ở bước 3.
+    const estimatedTotalWidth = (clockWidth: number, panelWidth: number) => clockWidth + panelWidth
+
+    // ── Bước 3: RÀNG BUỘC theo chiều rộng video — nếu video có tỷ lệ cực
+    // đoan (rất cao & hẹp, như quay dọc điện thoại), overlay tính theo vh
+    // thuần có thể RỘNG HƠN cả video → cần scale down toàn bộ theo 1 hệ số
+    // chung để tổng chiều rộng overlay không vượt quá 1 phần video.
+    const MAX_OVERLAY_WIDTH_RATIO = 0.55   // overlay rộng tối đa 55% chiều rộng video
+    const maxAllowedTotalWidth = vw * MAX_OVERLAY_WIDTH_RATIO
+
+    const rawClockWidth = rawScale * clockWidthRatio
+    const rawPanelWidth = rawScale * panelMinWidthRatio
+    const rawTotalWidth = estimatedTotalWidth(rawClockWidth, rawPanelWidth)
+
+    // Nếu vượt ngưỡng, tính lại 1 scale NHỎ HƠN sao cho tổng chiều rộng vừa
+    // đúng giới hạn — nhân đều lên MỌI kích thước để giữ nguyên tỉ lệ nội
+    // bộ của overlay (không bị méo hình, chỉ nhỏ lại đồng đều).
+    const widthConstrainedScale = rawTotalWidth > maxAllowedTotalWidth
+        ? rawScale * (maxAllowedTotalWidth / rawTotalWidth)
+        : rawScale
+
+    // Cũng ràng buộc ngược lại: nếu video RẤT RỘNG nhưng THẤP (vd ultrawide
+    // 21:9 nhưng cửa sổ dẹt), đừng để overlay quá nhỏ so với video — đặt
+    // sàn tối thiểu theo % chiều rộng video để overlay vẫn đọc được.
+    const MIN_OVERLAY_WIDTH_RATIO = 0.12
+    const minAllowedTotalWidth = vw * MIN_OVERLAY_WIDTH_RATIO
+    const finalScale = rawTotalWidth < minAllowedTotalWidth
+        ? Math.min(MAX_SCALE, widthConstrainedScale * (minAllowedTotalWidth / Math.max(1, rawTotalWidth)))
+        : widthConstrainedScale
+
+    // ── Bước 4: mọi kích thước hiển thị đều tính từ CÙNG 1 finalScale ──
+    const clockWidth = finalScale * clockWidthRatio
+    const rowHeight = finalScale * rowHeightRatio
+    const scoreBoxWidth = finalScale * 0.8
+    const scoreFontSize = finalScale * 0.4
+    const timeFontSize = finalScale * 0.46
+    const labelFontSize = finalScale * 0.19
+    const matchFontSize = finalScale * 0.16
+    const badgeFontSize = finalScale * 0.23
+    const gap = finalScale * 0.09
+    const panelMinWidth = finalScale * panelMinWidthRatio
+    const clockPaddingLeft = finalScale * 0.16
+
+    const overlayLeftOffset = props.videoRect.left + vw * 0.03
+    const overlayTopOffset = props.videoRect.top + vh * 0.03
+
+    const timeColor = isTimeUp ? "#f87171" /* đỏ nhạt */ : (isPaused ? "rgba(255,255,255,0.55)" : "#fff")
+    const pauseIconSize = finalScale * 0.16
+
     return (
         <div
-            className="absolute z-[5] pointer-events-none select-none flex flex-col gap-[3px]"
-            style={{ top: "3%", left: "3%" }}
+            className="absolute z-[5] pointer-events-none select-none flex flex-col"
+            style={{ left: overlayLeftOffset, top: overlayTopOffset, gap }}
         >
             <div
                 className="flex items-stretch overflow-hidden rounded-[5px]"
-                style={{
-                    minWidth: "190px",   // nhỏ lại so với bản trước (260px)
-                    boxShadow: "0 3px 10px rgba(0,0,0,0.4)",
-                    // border: `1px solid ${SCORE_COLORS.accent}33`,
-                }}
+                style={{ boxShadow: "0 3px 10px rgba(0,0,0,0.4)" }}
             >
-                {/* ── Khối đồng hồ lục giác bên trái ── */}
                 <div
-                    className="relative flex flex-col items-center justify-center shrink-0"
+                    className="relative flex flex-col items-center justify-center shrink-0 gap-[3px]"
                     style={{
-                        width: "clamp(46px, 5.2vw, 84px)",
+                        width: clockWidth,
                         backgroundColor: SCORE_COLORS.bgClock,
                         clipPath: "polygon(12% 0%, 100% 0%, 100% 100%, 12% 100%, 0% 50%)",
-                        paddingLeft: "clamp(4px, 0.45vw, 8px)",
+                        paddingLeft: clockPaddingLeft,
                     }}
                 >
-                    <span
-                        className="font-bold tracking-[0.12em]"
-                        style={{ fontSize: "clamp(6.5px, 0.55vw, 10px)", color: SCORE_COLORS.accent }}
-                    >
+                    <span className="font-bold tracking-[0.12em]" style={{ fontSize: labelFontSize, color: SCORE_COLORS.accent }}>
                         ROUND {props.roundNo ?? 1}
                     </span>
-                    <span
-                        className="font-black leading-none font-mono"
-                        style={{
-                            fontSize: "clamp(14px, 1.35vw, 22px)",
-                            margin: "2px 0",
-                            color: "#fff",
-                            fontVariantNumeric: "tabular-nums",
-                            letterSpacing: "0.02em",
-                        }}
-                    >
-                        {timeStr}
-                    </span>
-                    <span
-                        className="font-semibold tracking-wider"
-                        style={{ fontSize: "clamp(6px, 0.48vw, 8.5px)", color: SCORE_COLORS.textDim }}
-                    >
-                        MATCH {props.matchNo ?? 1}
+
+                    <div className="flex items-center" style={{ gap: finalScale * 0.05 }}>
+                        {/* Icon tạm dừng nhỏ — chỉ hiện khi đang paused giữa chừng */}
+                        {isPaused && (
+                            <div className="flex" style={{ gap: pauseIconSize * 0.25 }}>
+                                <div style={{ width: pauseIconSize * 0.3, height: pauseIconSize, backgroundColor: "rgba(255,255,255,0.55)" }} />
+                                <div style={{ width: pauseIconSize * 0.3, height: pauseIconSize, backgroundColor: "rgba(255,255,255,0.55)" }} />
+                            </div>
+                        )}
+                        <span className="font-black leading-none font-mono" style={{
+                            fontSize: timeFontSize, color: timeColor,
+                            fontVariantNumeric: "tabular-nums", letterSpacing: "0.02em",
+                            // Nhấp nháy nhẹ khi hết giờ để thu hút chú ý
+                            animation: isTimeUp ? "score-overlay-blink 1s ease-in-out infinite" : undefined,
+                        }}>
+                            {timeStr}
+                        </span>
+                    </div>
+
+                    {/* Nhãn HẾT GIỜ thay thế MATCH khi hết thời gian, vì đây là
+                        thông tin quan trọng hơn cần ưu tiên hiển thị */}
+                    <span className="font-semibold tracking-wider" style={{
+                        fontSize: matchFontSize,
+                        color: isTimeUp ? "#f87171" : SCORE_COLORS.textDim,
+                        fontWeight: isTimeUp ? 800 : 600,
+                    }}>
+                        {isTimeUp ? "HẾT GIỜ" : `MATCH ${props.matchNo ?? 1}`}
                     </span>
                 </div>
 
-                {/* ── Hai hàng VĐV ── */}
-                <div
-                    className="flex flex-col"
-                    style={{ minWidth: "clamp(115px, 12.5vw, 200px)", backgroundColor: SCORE_COLORS.bgPanel }}
-                >
-                    <AthleteRow
-                        score={s.redScore}
-                        flatColor={SCORE_COLORS.red}
-                        isLeading={s.leadingSide === "red"}
-                    />
+                <div className="flex flex-col" style={{ minWidth: panelMinWidth, backgroundColor: SCORE_COLORS.bgPanel }}>
+                    <AthleteRow score={s.redScore} flatColor={SCORE_COLORS.red} isLeading={s.leadingSide === "red"}
+                        rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
+                        athleteName="HONG" />
                     <div className="h-px bg-white/10" />
-                    <AthleteRow
-                        score={s.blueScore}
-                        flatColor={SCORE_COLORS.blue}
-                        isLeading={s.leadingSide === "blue"}
-                    />
+                    <AthleteRow score={s.blueScore} flatColor={SCORE_COLORS.blue} isLeading={s.leadingSide === "blue"}
+                        rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
+                        athleteName="CHONG" />
                 </div>
             </div>
 
-            {/* ── Nhãn "INSTANT VIDEO REPLAY" — chỉ hiện khi đang xem lại ── */}
             {props.isReplay && (
-                <div
-                    className="self-start font-black tracking-[0.12em] rounded-[3px]"
-                    style={{
-                        fontSize: "clamp(8px, 0.7vw, 11px)",
-                        padding: "clamp(2px, 0.3vw, 4px) clamp(6px, 0.7vw, 10px)",
-                        backgroundColor: SCORE_COLORS.accent,
-                        color: "#04121f",
-                    }}
-                >
+                <div className="self-start font-black tracking-[0.12em] rounded-[3px]" style={{
+                    fontSize: badgeFontSize, padding: `${gap}px ${gap * 2}px`,
+                    backgroundColor: SCORE_COLORS.accent, color: "#04121f",
+                }}>
                     INSTANT VIDEO REPLAY
                 </div>
             )}
+
+            {/* Keyframe cho hiệu ứng nhấp nháy khi hết giờ — chỉ cần khai báo 1 lần */}
+            <style jsx>{`
+                @keyframes score-overlay-blink {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.35; }
+                }
+            `}</style>
         </div>
     )
 }
@@ -1090,29 +1151,19 @@ function useTimerOverlay(courtId: string, wallClockTimeMs: number | null) {
 
     useEffect(() => {
         const socket = getSingletonSocket()
-
         socket.emit("timer:events:get", { courtId }, (evts: TimerHistoryEntry[]) => {
             setEntries(evts)
         })
-
         const onAdd = (entry: TimerHistoryEntry) => {
-            console.log(entry)
             setEntries(prev => [...(prev ? prev : []), entry])
         }
-
         socket.on("timer:event:add", onAdd)
         return () => { socket.off("timer:event:add", onAdd) }
     }, [courtId])
 
-    // Trả về CẢ remainingMs LẪN hasStarted — không cần quét ngược tìm mốc
-    // genesis nữa: binary search tìm phần tử MỚI NHẤT ≤ wallClockTimeMs.
-    // Nếu phần tử đó có event=null → tại thời điểm này đồng hồ đang ở
-    // trạng thái "vừa reset, chưa chạy" → ẩn overlay. Đúng NGAY LẬP TỨC vì
-    // reset luôn là mốc MỚI NHẤT cho tới khi có TimerEvent thật kế tiếp
-    // (run/stop/setRemaining) đè lên nó.
     return useMemo(() => {
         if (wallClockTimeMs === null || !entries || entries.length === 0) {
-            return { remainingMs: null, hasStarted: false }
+            return { remainingMs: null, hasStarted: false, isRunning: false }
         }
 
         let lo = 0, hi = entries.length - 1, idx = -1
@@ -1121,16 +1172,22 @@ function useTimerOverlay(courtId: string, wallClockTimeMs: number | null) {
             if (entries[mid].timestamp <= wallClockTimeMs) { idx = mid; lo = mid + 1 }
             else hi = mid - 1
         }
-        if (idx === -1) return { remainingMs: null, hasStarted: false }
+        if (idx === -1) return { remainingMs: null, hasStarted: false, isRunning: false }
 
         const entry = entries[idx]
-        if (entry.event === null) return { remainingMs: null, hasStarted: false }
+        if (entry.event === null) return { remainingMs: null, hasStarted: false, isRunning: false }
 
         const evt = entry.event
         const remainingMs = evt.isRunning
             ? Math.max(0, evt.remainingMs - (wallClockTimeMs - evt.timestamp))
             : evt.remainingMs
 
-        return { remainingMs, hasStarted: true }
+        // Đồng hồ được coi là "đang chạy" chỉ khi evt.isRunning=true VÀ
+        // vẫn còn thời gian thực tế tại thời điểm này — nếu remainingMs đã
+        // về 0 (dù evt.isRunning vẫn true do server chưa kịp clearInterval),
+        // coi như đã HẾT GIỜ chứ không phải đang chạy.
+        const isRunning = evt.isRunning && remainingMs > 0
+
+        return { remainingMs, hasStarted: true, isRunning }
     }, [entries, wallClockTimeMs])
 }

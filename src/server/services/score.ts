@@ -37,6 +37,7 @@ export type PendingVote = {
     pointType: JudgePointType
     voters: Set<string>
     timeout: NodeJS.Timeout
+    scoreEvent?: ScoreEvent
 }
 
 /**  */
@@ -117,29 +118,21 @@ function startVote(
                 const current = PENDING_VOTES.get(voteKey)
                 if (!current) return
 
-                if (current.voters.size >= (setting?.voteThreshold || 2)) {
-                    if (!PENDING_VOTES.has(voteKey)) return
-
-                    const judgeOrders = [...current.voters].map((id) => getJudgeOrder(courtId, id))
-                    updatedScore(io, courtId,
-                        round,
-                        current.side,
-                        current.pointType,
-                        "increase",
-                        "judge",
-                        judgeOrders
-                    )
+                if (current.scoreEvent) {
+                    current.scoreEvent.judgeNumber =
+                        [...current.voters].map(v => getJudgeOrder(courtId, v))
 
                     io.to(`court-${courtId}`).emit("judge:commit", {
                         side: side,
                         pointType: pointType,
-                        votersOrder: [...current.voters].map(v => getJudgeOrder(courtId, v))
+                        votersOrder: current.scoreEvent.judgeNumber,
+                        timestamp: current.scoreEvent.timestamp
                     })
                 }
 
                 PENDING_VOTES.delete(voteKey)
             },
-                setting?.pendingVoteMs || 700)
+                setting?.pendingVoteMs || 1000)
         }
 
         PENDING_VOTES.set(voteKey, pending)
@@ -150,28 +143,18 @@ function startVote(
     if (pending.voters.has(judgeId)) return
     pending.voters.add(judgeId)
 
-    // if (pending.voters.size >= (setting?.voteThreshold || 2)) {
-    // if (!PENDING_VOTES.has(voteKey)) return
-    // clearTimeout(pending.timeout)
+    if (pending.voters.size >= (setting?.voteThreshold || 2)) {
+        if (!PENDING_VOTES.has(voteKey)) return
 
-    // const judgeOrders = [...pending.voters].map((id) => getJudgeOrder(courtId, id))
-    // updatedScore(io, courtId,
-    //     round,
-    //     pending.side,
-    //     pending.pointType,
-    //     "increase",
-    //     "judge",
-    //     judgeOrders
-    // )
-
-    // io.to(`court-${courtId}`).emit("judge:commit", {
-    //     side: side,
-    //     pointType: pointType,
-    //     votersOrder: [...pending.voters].map(v => getJudgeOrder(courtId, v))
-    // })
-
-    // PENDING_VOTES.delete(voteKey)
-    // }
+        if (pending.scoreEvent) return
+        pending.scoreEvent = updatedScore(io, courtId,
+            round,
+            pending.side,
+            pending.pointType,
+            "increase",
+            "judge",
+        )
+    }
 }
 
 export type ScoreHistoryEntry = {
@@ -230,7 +213,6 @@ export function updatedScore(
     pointType: PointType,
     value: number | "increase" | "decrease",
     scoreChangeBy: "operator" | "judge",
-    judgeNumber?: (number | undefined)[]
 ) {
     const breakdown = side === "blue" ? "blueBreakdown" : "redBreakdown"
     if (round.blueBreakdown === null) round.blueBreakdown = emptyBreakdown()
@@ -264,7 +246,6 @@ export function updatedScore(
         remainingMs: remainingMs,
         pointType: pointType,
         scoreChangeBy: scoreChangeBy,
-        judgeNumber: judgeNumber,
         action: typeof value === "number" ? "set" : value,
         side: side,
         timestamp: Date.now(),
@@ -273,6 +254,8 @@ export function updatedScore(
     addScoreEvent(courtId, 1, scoreEvent)
 
     io.to(`court-${courtId}`).emit("score:event:add", { timestamp: scoreEvent.timestamp, event: scoreEvent })
+
+    return scoreEvent
 }
 
 export function handleJudgeScore(io: any, judgeId: string,

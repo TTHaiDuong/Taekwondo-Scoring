@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Oswald, JetBrains_Mono } from "next/font/google"
 import QRCode from "react-qr-code"
 import { getSingletonSocket } from "@/scripts/global-client-io"
+import { useShortcut } from "@/components/MobileOperator"
 
 // ============================================================
 // TRANG CHIA SẺ KẾT NỐI — dùng ở bàn điều khiển/khu vực check-in trước
@@ -20,7 +21,8 @@ import { getSingletonSocket } from "@/scripts/global-client-io"
 const display = Oswald({ subsets: ["latin", "latin-ext"], weight: ["400", "500", "600", "700"], variable: "--font-display" })
 const mono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "700"], variable: "--font-mono" })
 
-type GroupId = "wifi" | "control" | "judge" | "view"
+const GROUD_ID = ["wifi", "control", "judge", "view"] as const
+type GroupId = typeof GROUD_ID[number]
 
 type LinkItem = {
     label: string
@@ -74,6 +76,8 @@ export default function SharePage() {
 
     useEffect(() => {
         function handleKeyDown(e: KeyboardEvent) {
+            if (useShortcut(e)) return
+
             switch (e.key) {
                 case "1":
                     setActive("wifi")
@@ -87,6 +91,12 @@ export default function SharePage() {
                 case "4":
                     setActive("view")
                     break
+                case "Tab":
+                    e.preventDefault()
+                    const currentIdx = GROUD_ID.findIndex(a => a === active)
+                    const nextLabel = GROUD_ID[(currentIdx + 1) % 4]
+                    setActive(nextLabel)
+                    break
             }
         }
 
@@ -95,7 +105,7 @@ export default function SharePage() {
         return () => {
             window.removeEventListener("keydown", handleKeyDown)
         }
-    }, [])
+    }, [active])
 
     return (
         <div className={`${display.variable} ${mono.variable} h-dvh w-screen bg-[#14171C] text-[#F3F1EA] font-[family-name:var(--font-display)] flex flex-col overflow-hidden`}>
@@ -196,7 +206,7 @@ export default function SharePage() {
 
 function Card(props: { beltColor: string; title: string; qrValue: string; children?: React.ReactNode }) {
     return (
-        <div className="flex flex-row items-center gap-[56px] flex-wrap justify-center">
+        <div className="flex flex-row items-center gap-[24px] flex-wrap justify-center">
             <div className="flex flex-col items-center gap-[24px] shrink-0">
                 <div className="p-[24px] bg-[#F3F1EA] rounded-[24px] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.6)]">
                     <QRCode value={props.qrValue} size={300} fgColor="#14171C" bgColor="#F3F1EA" />

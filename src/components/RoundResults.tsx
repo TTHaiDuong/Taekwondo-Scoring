@@ -13,6 +13,7 @@ import ArmorI from "@/assets/solid-armor.svg"
 import HelmetI from "@/assets/solid-helmet.svg"
 import PunchI from "@/assets/solid-punch.svg"
 import { UIContext } from "./MobileOperator"
+import { useIsDesktop } from "./UseIsDesktop"
 
 const SIDE_LABEL = { blue: "Xanh", red: "Đỏ" }
 
@@ -387,10 +388,14 @@ function RoundRow(props: {
 function ResetMatchButton(props: { onReset: () => void }) {
     const [confirm, setConfirm] = useState(false)
     const { visible: isOpenClearScore, setVisible: setIsOpenClearScore } = useContext(UIContext)
+    const isDesktop = useIsDesktop()
 
     if (!confirm && !isOpenClearScore) return (
         <button
-            onClick={() => setConfirm(true)}
+            onClick={() => {
+                setConfirm(true)
+                setIsOpenClearScore(true)
+            }}
             className="w-full mt-[4px] py-[8px] rounded-[10px] text-[12px] text-white/90
                 bg-white/3 border border-white/8 active:bg-white/8 transition-colors"
         >
@@ -411,10 +416,10 @@ function ResetMatchButton(props: { onReset: () => void }) {
             <div className="flex gap-[8px]">
                 <button
                     onClick={() => { props.onReset(); setConfirm(false) }}
-                    className="flex-1 py-[8px] rounded-[10px] text-[13px] font-semibold
+                    className="flex-1 flex justify-center items-center gap-[2px] py-[8px] rounded-[10px] text-[13px] font-semibold
                         bg-red-700/60 text-red-200 active:bg-red-700/80 transition-colors"
                 >
-                    Xác nhận xoá
+                    Xác nhận xoá {isDesktop && <span className="text-[0.6rem] text-white/50">[Ctrl+Enter]</span>}
                 </button>
                 <button
                     onClick={() => {

@@ -250,7 +250,7 @@ function TimeRow(props: {
     label: string
     binding: Binding<number>
     onBindingChange: (b: Binding<number>) => void
-    onOpenPicker: () => void
+    onOpenPicker?: () => void
 
     value: number
 }) {
@@ -263,7 +263,7 @@ function TimeRow(props: {
             <button
                 className={`flex-1 flex items-center gap-[10px] text-left rounded-[10px] transition-colors
                     ${isLinked ? "cursor-default" : "active:bg-black/5"}`}
-                onClick={() => { if (!isLinked) props.onOpenPicker() }}
+                onClick={() => { if (!isLinked) props.onOpenPicker?.() }}
                 disabled={isLinked}
             >
                 <span className="flex-1 text-[15px] font-medium text-white/80">
@@ -375,6 +375,9 @@ export default function MobileSetting(props: {
     onApplyPTGChanged?: (value: boolean) => void
     pointGap: number
     onPointGapChanged?: (value: number) => void
+
+    leavePageBreakTimer: boolean
+    onLeavePageBreakTimerChanged?: (value: boolean) => void
 }) {
     const s = props.sheetData
 
@@ -617,16 +620,16 @@ export default function MobileSetting(props: {
                             label="Giải lao"
                             binding={breakMs}
                             onBindingChange={setBreakMs}
-                            onOpenPicker={() => setTimePickerTarget("breakMs")}
-                            value={props.roundMs}
+                            // onOpenPicker={() => setTimePickerTarget("breakMs")}
+                            value={60_000}
                         />
                         <RowDivider />
                         <TimeRow
                             label="Điều trị (Kye-shi)"
                             binding={kyeshiMs}
                             onBindingChange={setKyeshiMs}
-                            onOpenPicker={() => setTimePickerTarget("kyeshiMs")}
-                            value={props.roundMs}
+                            // onOpenPicker={() => setTimePickerTarget("kyeshiMs")}
+                            value={60_000}
                         />
                     </SettingGroup>
 
@@ -669,6 +672,12 @@ export default function MobileSetting(props: {
                             description="Chuyển sang đếm ngược giải lao khi hết giờ hiệp đấu"
                             value={autoBreak}
                             onChange={setAutoBreak}
+                        />
+                        <ToggleRow
+                            label="Dừng đồng hồ"
+                            description="Dừng đồng hồ khi rời trang điều khiển"
+                            value={props.leavePageBreakTimer}
+                            onChange={v => props.onLeavePageBreakTimerChanged?.(v)}
                         />
                     </SettingGroup>
 

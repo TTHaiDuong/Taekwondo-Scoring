@@ -81,17 +81,21 @@ export default function Camera() {
 
     const params = useSearchParams();
     const courtId = params.get("courtId") || "1";
-    const cameraId = params.get("cameraId") || "main";
     const facing = params.get("facing") || "environment";
+    // cameraId giờ là STATE do người dùng xác nhận/nhập, không lấy thẳng
+    // từ URL — query string chỉ dùng làm giá trị điền sẵn (prefill) cho
+    // tiện khi quét QR có sẵn tên, nhưng vẫn luôn phải qua màn hình xác
+    // nhận trước khi camera thực sự khởi động.
+    const [cameraId, setCameraId] = useState<string | null>(null);
+    const [cameraIdInput, setCameraIdInput] = useState(() => params.get("cameraId") || "");
 
     const searchParams = useSearchParams();
 
     useEffect(() => {
-        const cameraId = searchParams.get("cameraId");
         document.title = cameraId
             ? `Camera - ${cameraId}`
             : "Camera";
-    }, [searchParams]);
+    }, [searchParams, cameraId]);
 
 
     const drawFrame = useCallback(() => {
@@ -126,6 +130,8 @@ export default function Camera() {
     }, [drawFrame]);
 
     useEffect(() => {
+        if (!cameraId) return; // CHƯA xác nhận tên camera — không mở getUserMedia/socket
+
         let localStream: MediaStream | undefined;
         let socket: Socket | undefined;
 
@@ -435,31 +441,66 @@ export default function Camera() {
 
     return (
         <div className="relative w-screen h-screen bg-black">
-            <div className="absolute inset-0 bg-black flex items-center justify-center">
-                <video ref={videoRef} playsInline muted
-                    className={`w-full h-full object-contain bg-black ${zoomDisplay > 1 ? "hidden" : ""}`} />
-                <canvas ref={canvasRef}
-                    className={`w-full h-full object-contain bg-black ${zoomDisplay > 1 ? "" : "hidden"}`} />
-            </div>
+            {!cameraId ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-[24px] px-[24px] bg-black">
+                    <div className="flex flex-col items-center gap-[6px]">
+                        <span className="text-[13px] tracking-[0.2em] uppercase text-white/40">Sân {courtId}</span>
+                        <span className="text-[22px] font-bold text-white">Đặt tên cho camera này</span>
+                        <span className="text-[13px] text-white/50 text-center max-w-[280px]">
+                            Tên này giúp phân biệt các máy quay khi xem trên IVR (vd: "front", "sau-luoi", "khan-dai")
+                        </span>
+                    </div>
 
-            <div className="absolute top-0 left-0 right-0 z-10
-                flex items-center justify-between px-[16px] py-[10px]
-                bg-gradient-to-b from-black/70 to-transparent">
-                <span className="px-[10px] py-[4px] rounded-full text-[12px] font-bold bg-black/50 text-white">
-                    📷 {cameraId.toUpperCase()} · Sân {courtId}
-                    {zoomDisplay > 1 && ` · Zoom ${zoomDisplay.toFixed(1)}×`}
-                </span>
-                <span className={`px-[10px] py-[4px] rounded-full text-[11px] font-semibold
-                    flex items-center gap-[6px] ${s.cls}`}>
-                    {s.dot && <span className="w-[6px] h-[6px] rounded-full bg-current animate-pulse" />}
-                    {s.label}
-                </span>
-            </div>
+                    <input
+                        autoFocus
+                        value={cameraIdInput}
+                        onChange={e => setCameraIdInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter" && cameraIdInput.trim()) setCameraId(cameraIdInput.trim()) }}
+                        placeholder="vd: front"
+                        className="w-full max-w-[280px] text-center bg-white/5 border-2 border-white/15
+                        focus:border-amber-400 outline-none rounded-[14px] py-[16px] px-[20px]
+                        text-[24px] font-bold text-white placeholder:text-white/20 placeholder:font-normal"
+                    />
 
-            {status === "stopped" && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/70">
-                    <p className="text-white/70 text-[14px]">Điều khiển viên đã dừng camera này.</p>
+                    <button
+                        disabled={!cameraIdInput.trim()}
+                        onClick={() => setCameraId(cameraIdInput.trim())}
+                        className="w-full max-w-[280px] py-[16px] rounded-[14px] text-[16px] font-bold
+                        bg-amber-400 text-black active:scale-95 transition-transform
+                        disabled:opacity-30 disabled:active:scale-100"
+                    >
+                        Bắt đầu quay
+                    </button>
                 </div>
+            ) : (
+                <>
+                    <div className="absolute inset-0 bg-black flex items-center justify-center">
+                        <video ref={videoRef} playsInline muted
+                            className={`w-full h-full object-contain bg-black ${zoomDisplay > 1 ? "hidden" : ""}`} />
+                        <canvas ref={canvasRef}
+                            className={`w-full h-full object-contain bg-black ${zoomDisplay > 1 ? "" : "hidden"}`} />
+                    </div>
+
+                    <div className="absolute top-0 left-0 right-0 z-10
+                    flex items-center justify-between px-[16px] py-[10px]
+                    bg-gradient-to-b from-black/70 to-transparent">
+                        <span className="px-[10px] py-[4px] rounded-full text-[12px] font-bold bg-black/50 text-white">
+                            📷 {cameraId.toUpperCase()} · Sân {courtId}
+                            {zoomDisplay > 1 && ` · Zoom ${zoomDisplay.toFixed(1)}×`}
+                        </span>
+                        <span className={`px-[10px] py-[4px] rounded-full text-[11px] font-semibold
+                        flex items-center gap-[6px] ${s.cls}`}>
+                            {s.dot && <span className="w-[6px] h-[6px] rounded-full bg-current animate-pulse" />}
+                            {s.label}
+                        </span>
+                    </div>
+
+                    {status === "stopped" && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/70">
+                            <p className="text-white/70 text-[14px]">Điều khiển viên đã dừng camera này.</p>
+                        </div>
+                    )}
+                </>
             )}
         </div>
     );

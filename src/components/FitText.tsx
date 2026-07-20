@@ -23,6 +23,7 @@ type FitTextProps = StyleProps & {
 const FitText = forwardRef<HTMLElement, FitTextProps>(({ useEllipses = true, ...props }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null)
     const [fontSize, setFontSize] = useState<number>(0)
+    const lastSizeRef = useRef<number>(0)   // để so sánh, tránh set lại giá trị gần như không đổi
 
     // Hàm để tính toán kích thước chữ phù hợp với không gian chứa
     const handleResize = useCallback(() => {
@@ -44,7 +45,10 @@ const FitText = forwardRef<HTMLElement, FitTextProps>(({ useEllipses = true, ...
         const newSize = !props.fitDirection ? Math.min(horizontalStretch, verticalStretch)
             : props.fitDirection === "vertical" ? verticalStretch : horizontalStretch
 
-        setFontSize(newSize)
+        if (Math.abs(newSize - lastSizeRef.current) > 0.5) {
+            lastSizeRef.current = newSize
+            setFontSize(newSize)
+        }
     }, [props.scale, props.children, props.fitDirection, props.virtualText])
 
     // Bắt sự kiện thay đổi kích thước của container và cập nhật kích thước chữ
@@ -66,8 +70,11 @@ const FitText = forwardRef<HTMLElement, FitTextProps>(({ useEllipses = true, ...
     return (
         <div
             id={props.id}
-            ref={containerRef}
-            className={
+            ref={(node: HTMLDivElement | null) => {
+                containerRef.current = node
+                if (typeof ref === "function") ref(node)
+                else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = node
+            }} className={
                 "flex-center " +
                 props.className
             }

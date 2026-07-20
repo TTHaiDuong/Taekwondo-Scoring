@@ -5,7 +5,7 @@
 /certificates
 /livekit
 public/clips/
-puplic/hls/
+public/hls/
 
 # dependencies
 /node_modules

@@ -1,9 +1,9 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { ScoreEvent, RoundResult, POINT_MAP } from "../scripts/match-types"
+import { ScoreEvent, RoundResult, POINT_MAP, Side, PointType } from "../scripts/match-types"
 import { getSingletonSocket } from "@/scripts/global-client-io"
-import { ScoreHistoryEntry } from "@/server/services/score"
+import { JudgePointType, ScoreHistoryEntry } from "@/server/services/score"
 
 // ============================================================
 // SCORE HISTORY — Timeline điểm từng hiệp + undo
@@ -144,12 +144,29 @@ export default function ScoreHistory(props: {
 
         socket.on("score:event:add", onAdd)
         socket.on("score:reset", onClear)
+        socket.on("judge:commit", (data: {
+            side: Side,
+            pointType: JudgePointType,
+            votersOrder: number[],
+            timestamp: number
+        }) => {
+            if (!events) return
+            events.forEach(e => {
+                if (e.timestamp === data.timestamp
+                    && e.pointType === data.pointType
+                    && e.side === data.side
+                ) {
+                    e.judgeNumber = data.votersOrder
+                }
+            })
+            setEvents([...events])
+        })
 
         return () => {
             socket.off("score:event:add", onAdd)
             socket.off("score:reset", onClear)
         }
-    }, [props.courtId])
+    }, [props.courtId, events])
 
     if (!events || events.length === 0) {
         return (

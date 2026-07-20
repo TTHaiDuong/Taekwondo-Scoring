@@ -22,6 +22,7 @@ import { JudgePressStack } from "./JudgePress"
 import { motion, AnimatePresence, useDragControls, useMotionValue, useAnimation, variantPriorityOrder } from "framer-motion"
 import usePageVisibility from "./UsePageVisibility"
 import { useIsDesktop } from "./UseIsDesktop"
+import FitText from "./FitText"
 
 // ── Fullscreen hook ───────────────────────────────────────────
 function useFullscreen() {
@@ -172,7 +173,7 @@ function ScoreRow(props: {
         <button
             disabled={props.disabled}
             onClick={props.onPlus}
-            className={`flex-center w-[25px] h-[25px] rounded-[6px] text-[25px] text-white
+            className={`flex-center w-[30px] h-[30px] rounded-[6px] text-[25px] text-white
                 transition-colors active:scale-95
                 ${props.disabled ? "opacity-30 cursor-not-allowed" : "active:opacity-80"}`}
             style={{ background: `${accent}0.5)` }}
@@ -201,7 +202,7 @@ function ScoreRow(props: {
     return (
         <div
             className="flex items-center px-[14px] py-[5px] rounded-[8px] gap-[10px]"
-            style={{ background: `${accent}0.07)` }}
+            style={{ background: `${accent}0.05)` }}
         >
             {isBlue ? (
                 <>
@@ -241,10 +242,14 @@ function GjRow(props: {
     onPlus: () => void
     onMinus: () => void
     disabled: boolean
+    blur?: boolean
 }) {
     const isBlue = props.side === "BLUE"
     return (
-        <div className="flex items-center px-[14px] py-[5px] rounded-[8px] gap-[10px] min-w-0 bg-white/10">
+        <div
+            className="flex items-center px-[14px] py-[5px] rounded-[8px] gap-[10px] min-w-0"
+            style={{ backgroundColor: props.blur ? "rgba(255, 255, 255, 0.03)" : "rgba(255, 255, 255, 0.1)" }}
+        >
             {isBlue ? (
                 <>
                     <span className="flex-center w-[20px] text-[18px] font-bold text-white/60">{props.label}</span>
@@ -257,13 +262,13 @@ function GjRow(props: {
                         {props.value}
                     </span>
                     <button disabled={props.disabled} onClick={props.onPlus}
-                        className="flex-center w-[25px] h-[25px] text-[25px] rounded-[6px]
+                        className="flex-center w-[30px] h-[30px] text-[25px] rounded-[6px]
                             text-white bg-white/20 active:scale-95 disabled:opacity-30">+</button>
                 </>
             ) : (
                 <>
                     <button disabled={props.disabled} onClick={props.onPlus}
-                        className="flex-center w-[25px] h-[25px] text-[25px] rounded-[6px]
+                        className="flex-center w-[30px] h-[30px] text-[25px] rounded-[6px]
                             text-white bg-white/20 active:scale-95 disabled:opacity-30">+</button>
                     <span className={`flex-1 text-center font-bold 
                             font-variant-numeric tabular-nums text-${scoreColor}`}
@@ -528,16 +533,16 @@ function ClockPanel(props: {
             <div className="flex justify-center items-center text-[10px] font-bold text-white/50 tracking-wider pt-[2px]">
                 {roundLabel}
             </div>
-            <div
-                className="flex justify-center items-center font-score font-bold leading-none tabular-nums"
+            <FitText
+                scale={0.8}
+                className="font-score font-bold leading-none tabular-nums"
                 style={{
-                    fontSize: "clamp(1.6rem,9vw,3rem)",
                     color: props.mode === "match" ? matchColor : borderColor,
                     transition: "color 0.4s ease",
                 }}
             >
                 {timeStr}
-            </div>
+            </FitText>
             <div
                 className={`flex-center text-[9px] font-bold tracking-wider`}
                 style={{
@@ -657,6 +662,56 @@ function PtgNoticeDialog(props: {
     )
 }
 
+type ToastVariant = "paused" | "warning"
+
+function Toast(props: { message: React.JSX.Element | null; variant: ToastVariant }) {
+    const isWarning = props.variant === "warning"
+    return (
+        <AnimatePresence>
+            {props.message && (
+                <motion.div
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.85 }}
+                    transition={{ type: "spring", stiffness: 380, damping: 24 }}
+                    className="fixed inset-0 z-[300] flex items-center justify-center px-[24px] pointer-events-none"
+                >
+                    <div className={`relative flex flex-col items-center gap-[14px] px-[32px] py-[28px]
+                        rounded-[24px] border-4 shadow-[0_20px_60px_rgba(0,0,0,0.65)] w-[clamp(200px,100vw,260px)]
+                        ${isWarning ? "bg-red-600 border-red-300" : "bg-amber-400 border-amber-200"}`}>
+
+                        {/* Vòng nhịp cảnh báo — chỉ có ở mức "warning" (đồng hồ vẫn chạy) */}
+                        {isWarning && (
+                            <motion.div
+                                className="absolute inset-0 rounded-[24px] border-4 border-red-300 pointer-events-none"
+                                animate={{ opacity: [0.7, 0, 0.7], scale: [1, 1.08, 1] }}
+                                transition={{ duration: 1.3, repeat: Infinity, ease: "easeOut" }}
+                            />
+                        )}
+
+                        <div className={`flex-center w-[56px] h-[56px] rounded-full text-[26px] shrink-0
+                            ${isWarning ? "bg-red-800 text-white" : "bg-amber-700 text-white"}`}>
+                            {isWarning ? "⏱" : "⏸"}
+                        </div>
+
+                        <span className={`text-[12px] font-black tracking-[0.25em] uppercase
+                            ${isWarning ? "text-red-100" : "text-amber-900/60"}`}>
+                            {isWarning ? "Cảnh báo" : "Thông báo"}
+                        </span>
+
+                        <span className={`text-[19px] font-black text-center leading-tight
+                            ${isWarning ? "text-white" : "text-black"}`}>
+                            {props.message}
+                        </span>
+                    </div>
+                </motion.div>
+            )}
+        </AnimatePresence>
+    )
+}
+
+export const useShortcut = (e: KeyboardEvent) => e.ctrlKey || e.shiftKey || e.altKey || e.metaKey
+
 // ══════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════
@@ -679,6 +734,7 @@ export default function MobileOperator() {
 
     const [pointGap, setPointGap] = useState<number>(15)
     const [pointGapEnabled, setPointGapEnabled] = useState<boolean>(true)
+    const [leavePageBreakTimer, setLeavePageBreakTimer] = useState<boolean>(true)
 
     const [mode, setMode] = useState<AppMode>("match")
     const { isFullscreen, fsAvailable, showGuide, setShowGuide, toggleFullscreen } = useFullscreen()
@@ -760,16 +816,18 @@ export default function MobileOperator() {
 
             socket.emit("match:config:get", { courtId }, (c: any) => {
                 if (!c) {
-                    socket.emit("match:config:set", {
-                        courtId, config: {
-                            pointGap,
-                            pointGapEnabled
-                        }
-                    })
+                    // socket.emit("match:config:set", {
+                    //     courtId, config: {
+                    //         pointGap,
+                    //         pointGapEnabled,
+                    //     }
+                    // })
                     return
                 }
-                if (c.pointGap) setPointGap(c.pointGap)
+                if (c.pointGap !== undefined) setPointGap(c.pointGap)
                 if (c.pointGapEnabled !== undefined) setPointGapEnabled(c.pointGapEnabled)
+                if (c.roundMs !== undefined) setRoundMs(c.roundMs)
+                if (c.leavePageBreakTimer !== undefined) setLeavePageBreakTimer(c.leavePageBreakTimer)
             })
 
             return
@@ -856,6 +914,8 @@ export default function MobileOperator() {
         }
     }, [timerRunning, remainingMs])
 
+    const [isOpenClearScore, setIsOpenClearScore] = useState<boolean>(false)
+
     useEffect(() => {
         function handleKeyDown(e: KeyboardEvent) {
             if (e.code === "Space") {
@@ -867,15 +927,19 @@ export default function MobileOperator() {
                 setTimePickerVisible(false)
                 setPtgDialogVisible(false)
             } else if (e.key.toLowerCase() === "i") {
+                if (useShortcut(e)) return;
                 setSettingVisible(prev => {
                     setQuickAccessVisible(false)
                     return !prev
                 })
             } else if (e.key.toLowerCase() === "u") {
+                if (useShortcut(e)) return;
                 setQuickAccessVisible(prev => {
                     setSettingVisible(false)
                     return !prev
                 })
+            } else if (e.code === "Enter" && e.ctrlKey && isOpenClearScore) {
+                clearScore()
             }
         }
 
@@ -884,7 +948,7 @@ export default function MobileOperator() {
         return () => {
             window.removeEventListener("keydown", handleKeyDown);
         };
-    }, [toggleTimer]);
+    }, [toggleTimer, isOpenClearScore]);
 
     // ── Test mode overlay ──────────────────────────────────
     // ── IVR helpers ─────────────────────────────────────────────
@@ -900,13 +964,55 @@ export default function MobileOperator() {
         ? { outline: "3px solid #F59E0B", outlineOffset: "-3px", }
         : {}
 
-    const [isOpenClearScore, setIsOpenClearScore] = useState<boolean>(false)
-
     useEffect(() => {
         if (!quickAccessVisible) setIsOpenClearScore(false)
     }, [quickAccessVisible])
 
     const isDesktop = useIsDesktop()
+
+    const [toastMessage, setToastMessage] = useState<React.JSX.Element | null>(null)
+    const [toastVariant, setToastVariant] = useState<ToastVariant>("paused")
+    const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+    const showToast = useCallback((message: React.JSX.Element, variant: ToastVariant) => {
+        setToastMessage(message)
+        setToastVariant(variant)
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+        // Cảnh báo (đồng hồ vẫn chạy) nghiêm trọng hơn — để lâu hơn 1 chút
+        toastTimerRef.current = setTimeout(() => setToastMessage(null), variant === "warning" ? 6000 : 4000)
+    }, [])
+
+    useEffect(() => {
+        return () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current) }
+    }, [])
+
+    // Thay hẳn effect leavePageBreakTimer cũ bằng bản này
+    useEffect(() => {
+        if (isPageActive) setToastMessage(null)
+        if (isPageActive || !timerRunning) return   // chỉ quan tâm lúc rời trang MÀ đồng hồ đang chạy
+
+        if (leavePageBreakTimer) {
+            getSingletonSocket().emit("timer:stop", { courtId })
+            showToast((<>Đồng hồ<br />ĐÃ TẠM DỪNG</>), "paused")
+        } else {
+            // Cài đặt KHÔNG tự dừng khi rời trang — đồng hồ vẫn chạy ngầm,
+            // đây là tình huống dễ mất kiểm soát nhất nên cần cảnh báo rõ ràng.
+            showToast((<>Đồng hồ<br />VẪN ĐANG CHẠY!</>), "warning")
+        }
+    }, [leavePageBreakTimer, isPageActive, timerRunning, courtId, showToast])
+
+    const clearScore = useCallback(() => {
+        setQuickAccessVisible(false)
+        const socket = getSingletonSocket()
+        socket.emit("timer:stop", { courtId }, () => {
+            socket.emit("timer:remainingMs:update", {
+                courtId,
+                remainingMs: roundMs,
+            }, () => {
+                socket.emit("score:operator:clear", { courtId })
+            })
+        })
+    }, [roundMs, courtId])
 
     // ── Render ─────────────────────────────────────────────
     return (
@@ -917,6 +1023,8 @@ export default function MobileOperator() {
             }}
         >
             <div className="flex justify-center w-screen h-dvh">
+                <Toast message={toastMessage} variant={toastVariant} />
+
                 <div
                     className="relative flex flex-col justify-between gap-[6px] w-full max-w-[400px] h-full overflow-hidden select-none bg-[#111111]"
                     style={{
@@ -925,7 +1033,7 @@ export default function MobileOperator() {
                         //     linear-gradient(270deg, #A30000 0%, #57004A 48%, #43005D 52%, #00009F 100%)
                         // `,
                         color: "white",
-                        filter: isPageActive ? "grayscale(0)" : (timerRunning ? (remainingMs % 1000 > 500 ? "grayscale(0.7)" : "grayscale(1)") : "grayscale(0.9)"),
+                        filter: isPageActive ? "grayscale(0)" : (timerRunning ? (remainingMs % 1000 > 500 ? "grayscale(0.5)" : "grayscale(1)") : "grayscale(0.9)"),
                         transition: "filter 0.4s ease",
                         ...outerStyle
                     }}
@@ -954,7 +1062,10 @@ export default function MobileOperator() {
                         <MobileSetting
                             onClose={() => setSettingVisible(false)}
                             roundMs={roundMs}
-                            onRoundMsChanged={setRoundMs}
+                            onRoundMsChanged={v => {
+                                getSingletonSocket().emit("match:config:set", { courtId, config: { roundMs: v } })
+                                setRoundMs(v)
+                            }}
                             pointGap={pointGap}
                             onPointGapChanged={newPt => {
                                 getSingletonSocket().emit("match:config:set", { courtId, config: { pointGap: newPt } })
@@ -965,6 +1076,11 @@ export default function MobileOperator() {
                                 getSingletonSocket().emit("match:config:set", { courtId, config: { pointGapEnabled: v } })
                                 setPointGapEnabled(v)
                             }}
+                            leavePageBreakTimer={leavePageBreakTimer}
+                            onLeavePageBreakTimerChanged={v => {
+                                getSingletonSocket().emit("match:config:set", { courtId, config: { leavePageBreakTimer: v } })
+                                setLeavePageBreakTimer(v)
+                            }}
                         />
                     )}
 
@@ -973,18 +1089,7 @@ export default function MobileOperator() {
                             courtId={courtId}
                             roundMs={roundMs}
                             onClose={() => setQuickAccessVisible(false)}
-                            onClearScore={() => {
-                                setQuickAccessVisible(false)
-                                const socket = getSingletonSocket()
-                                socket.emit("timer:stop", { courtId }, () => {
-                                    socket.emit("timer:remainingMs:update", {
-                                        courtId,
-                                        remainingMs: roundMs,
-                                    }, () => {
-                                        socket.emit("score:operator:clear", { courtId })
-                                    })
-                                })
-                            }}
+                            onClearScore={clearScore}
                         />
                     }
 
@@ -1026,7 +1131,6 @@ export default function MobileOperator() {
                             Chung kết · 58KG
                         </span>
                     </div>
-
 
                     {timePickerVisible &&
                         <div
@@ -1182,9 +1286,8 @@ export default function MobileOperator() {
                         </div>
                     </div>
 
-
                     {/* ── POINT EDITORS ── */}
-                    <div className="flex-1 flex flex-col gap-[10px] px-[8px] min-h-0">
+                    <div className="flex-1 flex flex-col gap-[20px] px-[8px] min-h-0">
 
                         <div className="grid grid-cols-[1fr_1fr] gap-x-[6px] gap-y-[4px]">
                             <div className="flex items-center px-[14px] rounded-[8px] gap-[10px] min-w-0 bg-white/5">
@@ -1236,6 +1339,7 @@ export default function MobileOperator() {
                                 onPlus={() => emitScore("red", "eejeom", "increase")}
                                 onMinus={() => emitScore("red", "eejeom", "decrease")}
                                 disabled={!canScore}
+                                blur={remainingMs > 10000}
                             />
                             <GjRow
                                 label="2"
@@ -1244,6 +1348,7 @@ export default function MobileOperator() {
                                 onPlus={() => emitScore("blue", "eejeom", "increase")}
                                 onMinus={() => emitScore("blue", "eejeom", "decrease")}
                                 disabled={!canScore}
+                                blur={remainingMs > 10000}
                             />
                         </div>
 
