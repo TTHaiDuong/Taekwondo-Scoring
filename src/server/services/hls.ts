@@ -34,6 +34,33 @@ function resetStorage() {
     }
 }
 
+// Thêm hàm helper trong file server HLS
+function readPlaylistStats(hlsDir: string): { totalDurationSec: number; lastSegmentAt: number } | null {
+    const playlistPath = path.join(hlsDir, "source", "stream.m3u8")
+    if (!fs.existsSync(playlistPath)) return null
+
+    try {
+        const content = fs.readFileSync(playlistPath, "utf8")
+        // Cộng dồn TẤT CẢ giá trị #EXTINF:<giây> — đây là tổng thời lượng
+        // THẬT theo đúng số liệu FFmpeg đã ghi vào playlist, không suy đoán
+        // qua số lượng segment × SEGMENT_DURATION (vì segment cuối có thể
+        // ngắn hơn segment chuẩn).
+        let totalDurationSec = 0
+        const extinfRegex = /#EXTINF:([\d.]+),/g
+        let match: RegExpExecArray | null
+        while ((match = extinfRegex.exec(content)) !== null) {
+            totalDurationSec += parseFloat(match[1])
+        }
+
+        // mtime của file playlist = lần FFmpeg ghi gần nhất — dùng làm tín
+        // hiệu THẬT để biết stream có đang "sống" hay không, không cần hls.js.
+        const stat = fs.statSync(playlistPath)
+        return { totalDurationSec, lastSegmentAt: stat.mtimeMs }
+    } catch {
+        return null
+    }
+}
+
 // ── Dọn ffmpeg "mồ côi" từ lần chạy server TRƯỚC ─────────────
 // node --watch (hoặc crash/restart bất kỳ) không tự kill các tiến trình
 // ffmpeg CON đã spawn ở lần chạy trước — chúng tiếp tục chạy độc lập, vẫn
@@ -356,14 +383,19 @@ export function initHls(io: SocketIOServer, expressApp: any) {
         const list = Array.from(sessions.values())
             .filter(s => !courtId || s.courtId === courtId)
             .filter(s => fs.existsSync(path.join(s.hlsDir, "master.m3u8")))
-            .map(s => ({
-                courtId: s.courtId,
-                cameraId: s.cameraId,
-                paused: s.paused,
-                zoom: s.zoom,
-                startedAt: s.startedAt,
-                masterPlaylistUrl: `/api/hls/${s.courtId}/${s.cameraId}/${s.startedAt}/master.m3u8`,
-            }))
+            .map(s => {
+                const stats = readPlaylistStats(s.hlsDir)
+                return {
+                    courtId: s.courtId,
+                    cameraId: s.cameraId,
+                    paused: s.paused,
+                    zoom: s.zoom,
+                    startedAt: s.startedAt,
+                    masterPlaylistUrl: `/api/hls/${s.courtId}/${s.cameraId}/${s.startedAt}/master.m3u8`,
+                    totalDurationSec: stats?.totalDurationSec ?? 0,   // MỚI
+                    lastSegmentAt: stats?.lastSegmentAt ?? null,       // MỚI
+                }
+            })
         res.json(list)
     })
 

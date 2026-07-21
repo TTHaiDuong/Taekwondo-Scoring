@@ -230,7 +230,9 @@ export type Role = "operator" | "judge"
 
 export type ScoreEvent = {
     blueScore: number
+    blueGamjeom: number
     redScore: number
+    redGamjeom: number
     remainingMs?: number
     timestamp: number
     side: Side

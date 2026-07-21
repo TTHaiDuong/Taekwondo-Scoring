@@ -8,6 +8,7 @@ import { getSingletonSocket } from "@/scripts/global-client-io"
 import { getTimeString } from "@/components/MobileOperator"
 import usePageVisibility from "@/components/UsePageVisibility"
 import useVideoContentRect from "@/components/UseVideoContentRect"
+import { motion, AnimatePresence } from "framer-motion"
 
 // ============================================================
 // VIEWER — HLS-ONLY, kiểu YouTube Live
@@ -27,6 +28,8 @@ type RecordingInfo = {
     zoom: number
     startedAt: number
     masterPlaylistUrl: string
+    totalDurationSec: number   // MỚI — từ server, không qua hls.js
+    lastSegmentAt: number | null   // MỚI
 }
 
 type Status = "connecting" | "connected" | "error" | "no-publisher"
@@ -412,13 +415,22 @@ export default function Viewer() {
     }, [safePlay])
 
     const handleScrubStart = useCallback(async () => {
+        const alreadyScrubbing = isScrubbingRef.current   // đọc TRƯỚC khi set true bên dưới
+
         isScrubbingRef.current = true
         setScrubbing(true)
         setLiveMode(false)   // MỚI: bất kỳ thao tác tua nào cũng rời khỏi live-mode
 
         const video = videoRef.current
         if (video) {
-            wasPlayingRef.current = !video.paused
+            // CHỈ chụp trạng thái play/pause ở lần ĐẦU TIÊN của cả chuỗi tua.
+            // Nếu đã đang scrub (vd: bấm mũi tên liên tiếp trước khi seek trước
+            // kịp settle), video có thể đã bị pause bởi chính lần gọi trước đó —
+            // đọc lại video.paused lúc này sẽ luôn ra `true` và xoá mất ý định
+            // ban đầu "video đang phát", khiến video không bao giờ tự chạy lại.
+            if (!alreadyScrubbing) {
+                wasPlayingRef.current = !video.paused
+            }
             await safePause(video)
         }
     }, [safePause, setLiveMode])
@@ -466,7 +478,6 @@ export default function Viewer() {
     }, [courtId])
 
     const totalAnchorRef = useRef({ value: 0, at: Date.now() })
-    const streamAliveRef = useRef(true)
     const [displayTotalSec, setDisplayTotalSec] = useState(0)
 
     useEffect(() => {
@@ -491,26 +502,6 @@ export default function Viewer() {
             hls.attachMedia(video)
             hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => setLevels(data.levels))
             hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => setCurrentLevel(data.level))
-
-            // NGUỒN SỰ THẬT cho tổng thời lượng đã quay: mỗi khi hls.js tải và
-            // parse lại playlist (mỗi ~segment duration), data.details.totalduration
-            // là tổng thời lượng CHÍNH XÁC theo server, không phụ thuộc buffer của
-            // trình duyệt. data.details.live cho biết server còn đang ghi tiếp hay
-            // playlist đã "đóng" (ENDLIST) — cả hai đều là tín hiệu THẬT, không phải
-            // suy đoán qua thời gian trôi qua như cách dùng ngưỡng stall trước đây.
-            hls.on(Hls.Events.LEVEL_UPDATED, (_e, data) => {
-                const newTotal = data.details.totalduration
-                // CHỈ reset mốc neo khi totalduration THẬT SỰ thay đổi (có segment mới).
-                // hls.js vẫn tiếp tục fire LEVEL_UPDATED định kỳ dù server không ghi
-                // thêm gì (camera đã dừng/paused) — nếu reset "at" vô điều kiện mỗi
-                // lần fire, elapsed bị dội về 0 rồi tăng lại liên tục, gây hiện tượng
-                // displayTotalSec nhảy tới lui (1:04 ⇄ 1:05) dù giá trị thật không đổi.
-                if (newTotal !== totalAnchorRef.current.value) {
-                    totalAnchorRef.current = { value: newTotal, at: Date.now() }
-                }
-                streamAliveRef.current = data.details.live !== false
-            })
-
             hls.on(Hls.Events.ERROR, (_e, data) => { if (data.fatal) console.error("[VIR] HLS lỗi:", data) })
         } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
             video.src = url
@@ -520,57 +511,46 @@ export default function Viewer() {
         return () => { hlsRef.current?.destroy(); hlsRef.current = null }
     }, [activeRecording?.masterPlaylistUrl, activeRecording?.startedAt])
 
+    // "Stream còn sống" = lastSegmentAt gần đây (trong vòng vài lần
+    // SEGMENT_DURATION) — không cần hls.js báo live=false nữa.
+    const STALE_THRESHOLD_MS = 8000   // ~4× SEGMENT_DURATION (2s), đủ dung sai
+    function isStreamAlive(recording: RecordingInfo | null): boolean {
+        if (!recording || recording.lastSegmentAt === null) return false
+        return Date.now() - recording.lastSegmentAt < STALE_THRESHOLD_MS
+    }
+
     useEffect(() => {
         const id = setInterval(() => {
             const anchor = totalAnchorRef.current
-            // Dừng cộng dồn khi có BẤT KỲ tín hiệu THẬT nào xác nhận camera
-            // không còn ghi tiếp — không dựa vào đoán thời gian trôi qua:
-            // - server báo paused qua control API (activeRecording.paused)
-            // - server báo không còn camera nào phát (status === "no-publisher")
-            // - chính hls.js xác nhận playlist đã live=false (kết thúc/ENDLIST)
             const streamStopped =
                 activeRecording?.paused ||
                 status === "no-publisher" ||
-                !streamAliveRef.current
+                !isStreamAlive(activeRecording)
 
-            // CHỈ cộng dồn khi đang follow-live thật sự (state tường minh, không
-            // suy đoán). Khi đang xem lại (isFollowingLive=false), số tổng thời
-            // lượng đứng yên tại anchor.value — không "phình" theo thời gian
-            // thực trong lúc camera vẫn quay ngầm bên dưới.
             if (streamStopped || !isFollowingLiveRef.current) {
                 setDisplayTotalSec(anchor.value)
                 return
             }
 
-            const elapsed = streamStopped ? 0 : (Date.now() - anchor.at) / 1000
+            const elapsed = (Date.now() - anchor.at) / 1000
             setDisplayTotalSec(anchor.value + elapsed)
         }, 1000)
         return () => clearInterval(id)
-    }, [activeRecording?.paused, status])
+    }, [activeRecording, status])
 
+    // Mỗi khi poll /api/hls/cameras trả về dữ liệu mới (đã có sẵn interval
+    // POLL_INTERVAL_MS=3000), cập nhật lại mốc neo NẾU totalDurationSec thật
+    // sự đổi — hoàn toàn không phụ thuộc hls.js, nên chạy giống hệt nhau trên
+    // mọi trình duyệt kể cả Safari macOS (native HLS).
     useEffect(() => {
-        totalAnchorRef.current = { value: 0, at: Date.now() }
-        streamAliveRef.current = true
-
-        // MỚI: ước lượng lại positionSec NGAY LẬP TỨC khi chuyển sang phiên ghi
-        // hình khác (đổi camera, hoặc cùng camera nhưng session mới do
-        // restart/zoom/orientation). Nếu không làm điều này, positionSec vẫn
-        // giữ giá trị THUỘC CAMERA CŨ trong khoảng thời gian ngắn (cho tới khi
-        // rAF loop kịp đọc video.currentTime mới sau khi hls.js load xong nguồn
-        // mới) — kết hợp với activeRecording.startedAt đã đổi NGAY LẬP TỨC,
-        // wallClockTimeMs bị tính sai lệch tạm thời, khiến binary search trong
-        // useScoreOverlay/useTimerOverlay không tìm thấy entry hợp lệ (idx=-1)
-        // → ScoreOverlay ẩn đi rồi hiện lại ngay khi positionSec bắt kịp — đây
-        // chính là hiện tượng "nhấp nháy" khi chuyển camera.
-        //
-        // Ước lượng "khoảng cách tính từ lúc camera này bắt đầu quay tới hiện
-        // tại" làm giá trị tạm — vì mặc định mọi phiên mới đều ở/near live edge
-        // (jumpLive tự set isFollowingLive=true khi switchCamera), nên đây là
-        // xấp xỉ ĐÚNG cho tới khi rAF ghi đè bằng giá trị thật chính xác hơn.
-        if (activeRecording) {
-            setPositionSec(Math.max(0, (Date.now() - activeRecording.startedAt) / 1000))
+        if (!activeRecording) return
+        if (activeRecording.totalDurationSec !== totalAnchorRef.current.value) {
+            totalAnchorRef.current = {
+                value: activeRecording.totalDurationSec,
+                at: Date.now(),
+            }
         }
-    }, [activeRecording?.masterPlaylistUrl, activeRecording?.startedAt])
+    }, [activeRecording?.totalDurationSec])
 
     const bumpControlsVisible = useCallback(() => {
         setControlsVisible(true)
@@ -747,8 +727,8 @@ export default function Viewer() {
             if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
                 e.preventDefault()
                 const dir = e.key === "ArrowLeft" ? -1 : 1
-                wasPlayingRef.current = !video.paused   // giữ nguyên trạng thái play/pause sau khi seek
-                setLiveMode(false)                       // tua thủ công → rời live-mode
+                handleScrubStart()   // đặt isScrubbingRef=true + pause TRƯỚC khi seek — y hệt luồng kéo tay,
+                // chặn vòng lặp rAF ghi đè positionSec trong lúc đang seek
                 requestScrubSeek(video.currentTime + dir * 0.5, true)
                 if (controlsVisible) bumpControlsVisible()
             } else if (e.key === "0" || e.code === "Numpad0") {
@@ -765,7 +745,7 @@ export default function Viewer() {
 
         window.addEventListener("keydown", handleKeyDown)
         return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [requestScrubSeek, jumpLive, setLiveMode, controlsVisible, bumpControlsVisible])
+    }, [requestScrubSeek, jumpLive, setLiveMode, controlsVisible, bumpControlsVisible, handleScrubStart])
 
     const wallClockTimeMs = activeRecording
         ? activeRecording.startedAt + positionSec * 1000
@@ -958,6 +938,7 @@ const SCORE_COLORS = {
 
 function AthleteRow(props: {
     score: number
+    gamjeom: number
     flatColor: string
     isLeading: boolean
     rowHeight: number
@@ -979,11 +960,95 @@ function AthleteRow(props: {
                     {props.score}
                 </span>
             </div>
+
+            {/* Gamjeom — NGAY SAU ô điểm chính, ô riêng biệt để không lẫn với
+                điểm kỹ thuật. Chỉ hiện khi > 0, giữ chỗ bằng width cố định để
+                hàng RED/BLUE không lệch chiều rộng khác nhau khi 1 bên có
+                gamjeom còn bên kia không. */}
+            <div className="flex items-center justify-center shrink-0"
+                style={{
+                    width: props.rowHeight * 0.6,
+                    backgroundColor: props.gamjeom > 0
+                        ? (props.gamjeom >= 4 ? "rgba(225,29,46,0.9)" : "rgba(255,255,255,0.12)")
+                        : "transparent",
+                }}>
+                {props.gamjeom > 0 && (
+                    <span className="text-center font-black tabular-nums leading-none"
+                        style={{ fontSize: props.rowHeight * 0.4, color: props.gamjeom >= 4 ? "#fff" : "rgba(255,255,255,0.75)" }}>
+                        {props.gamjeom}
+                    </span>
+                )}
+            </div>
         </div>
     )
 }
 
+// ── Variants cho animation — cascade theo đúng thứ tự:
+// container (toàn khối) → group (clock+panel) → clock trước, panel sau →
+// panel → row 1 trước, row 2 sau (stagger lồng nhau qua framer-motion).
+const overlayContainerVariants = {
+    hidden: {},
+    visible: { transition: { staggerChildren: 0.15 } },
+}
+
+const groupVariants = {
+    hidden: {},
+    visible: { transition: { staggerChildren: 0.1 } },
+}
+
+// Đồng hồ "mọc" ra từ đầu nhọn bên trái — scaleX từ 0, neo transform-origin
+// bên trái để đúng đầu nhọn của clip-path polygon đứng yên, phần thân xoè
+// rộng ra bên phải.
+const clockVariants = {
+    hidden: { opacity: 0, scaleX: 0 },
+    visible: {
+        opacity: 1, scaleX: 1,
+        transition: { duration: 0.3, ease: [0.16, 1, 0.3, 1] as const },
+    },
+}
+
+const panelVariants = {
+    hidden: {},
+    visible: { transition: { staggerChildren: 0.09 } },
+}
+
+// Mỗi hàng athlete "trượt/mở" từ mép TRONG (sát đồng hồ, bên trái) ra
+// ngoài — dùng clip-path wipe thay vì transform đơn thuần để có cảm giác
+// "kéo màn hình thể thao ra" giống đồ hoạ broadcast thật, không phải chỉ
+// trượt vị trí.
+const rowRevealVariants = {
+    hidden: { clipPath: "inset(0 100% 0 0)" },
+    visible: {
+        clipPath: "inset(0 0% 0 0)",
+        transition: { duration: 0.38, ease: [0.22, 1, 0.36, 1] as const },
+    },
+}
+
+const badgeVariants = {
+    hidden: { opacity: 0, y: 6 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.25 } },
+}
+
 function ScoreOverlay(props: {
+    score: ScoreEvent | null
+    timerRemainingMs: number | null
+    roundNo?: number
+    matchNo?: number
+    isReplay?: boolean
+    hasStarted: boolean
+    videoRect: { left: number; top: number; width: number; height: number } | null
+    isRunning: boolean
+}) {
+    const show = props.hasStarted && props.videoRect !== null
+
+    return (
+        <AnimatePresence>
+            {show && <ScoreOverlayContent {...props} videoRect={props.videoRect!} />}
+        </AnimatePresence>
+    )
+}
+
+function ScoreOverlayContent(props: {
     score: ScoreEvent | null
     timerRemainingMs: number | null
     roundNo?: number
@@ -995,8 +1060,8 @@ function ScoreOverlay(props: {
 }) {
     if (!props.hasStarted || !props.videoRect) return null
 
-    const s: Pick<ScoreEvent, "redScore" | "blueScore" | "leadingSide"> =
-        props.score ?? { redScore: 0, blueScore: 0, leadingSide: null }
+    const s: Pick<ScoreEvent, "redScore" | "blueScore" | "redGamjeom" | "blueGamjeom" | "leadingSide"> =
+        props.score ?? { redScore: 0, blueScore: 0, redGamjeom: 0, blueGamjeom: 0, leadingSide: null }
 
     const timeStr = typeof props.timerRemainingMs === "number"
         ? getTimeString(props.timerRemainingMs)
@@ -1019,7 +1084,7 @@ function ScoreOverlay(props: {
     // vh nữa (tránh méo tỉ lệ khi vh thay đổi).
     const clockWidthRatio = 1.7      // clockWidth = scale * 1.7
     const rowHeightRatio = 0.8
-    const panelMinWidthRatio = 3.5   // panel (2 hàng VĐV) rộng tối thiểu = scale * 3.2
+    const panelMinWidthRatio = 3.8   // panel (2 hàng VĐV) rộng tối thiểu = scale * 3.8
 
     // Tổng chiều rộng ước tính của TOÀN BỘ khối overlay (clock + panel),
     // dùng để kiểm tra ràng buộc theo chiều rộng video ở bước 3.
@@ -1072,29 +1137,35 @@ function ScoreOverlay(props: {
     const pauseIconSize = finalScale * 0.16
 
     return (
-        <div
+        <motion.div
             className="absolute z-[5] pointer-events-none select-none flex flex-col"
             style={{ left: overlayLeftOffset, top: overlayTopOffset, gap }}
+            initial="hidden"
+            animate="visible"
+            exit="hidden"
+            variants={overlayContainerVariants}
         >
-            <div
+            <motion.div
                 className="flex items-stretch overflow-hidden rounded-[5px]"
                 style={{ boxShadow: "0 3px 10px rgba(0,0,0,0.4)" }}
+                variants={groupVariants}
             >
-                <div
+                <motion.div
                     className="relative flex flex-col items-center justify-center shrink-0 gap-[3px]"
                     style={{
                         width: clockWidth,
                         backgroundColor: SCORE_COLORS.bgClock,
                         clipPath: "polygon(12% 0%, 100% 0%, 100% 100%, 12% 100%, 0% 50%)",
                         paddingLeft: clockPaddingLeft,
+                        transformOrigin: "left center",
                     }}
+                    variants={clockVariants}
                 >
                     <span className="font-bold tracking-[0.12em]" style={{ fontSize: labelFontSize, color: SCORE_COLORS.accent }}>
                         ROUND {props.roundNo ?? 1}
                     </span>
 
                     <div className="flex items-center" style={{ gap: finalScale * 0.05 }}>
-                        {/* Icon tạm dừng nhỏ — chỉ hiện khi đang paused giữa chừng */}
                         {isPaused && (
                             <div className="flex" style={{ gap: pauseIconSize * 0.25 }}>
                                 <div style={{ width: pauseIconSize * 0.3, height: pauseIconSize, backgroundColor: "rgba(255,255,255,0.55)" }} />
@@ -1104,15 +1175,12 @@ function ScoreOverlay(props: {
                         <span className="font-black leading-none font-mono" style={{
                             fontSize: timeFontSize, color: timeColor,
                             fontVariantNumeric: "tabular-nums", letterSpacing: "0.02em",
-                            // Nhấp nháy nhẹ khi hết giờ để thu hút chú ý
                             animation: isTimeUp ? "score-overlay-blink 1s ease-in-out infinite" : undefined,
                         }}>
                             {timeStr}
                         </span>
                     </div>
 
-                    {/* Nhãn HẾT GIỜ thay thế MATCH khi hết thời gian, vì đây là
-                        thông tin quan trọng hơn cần ưu tiên hiển thị */}
                     <span className="font-semibold tracking-wider" style={{
                         fontSize: matchFontSize,
                         color: isTimeUp ? "#f87171" : SCORE_COLORS.textDim,
@@ -1120,36 +1188,39 @@ function ScoreOverlay(props: {
                     }}>
                         {isTimeUp ? "HẾT GIỜ" : `MATCH ${props.matchNo ?? 1}`}
                     </span>
-                </div>
+                </motion.div>
 
-                <div className="flex flex-col" style={{ minWidth: panelMinWidth, backgroundColor: SCORE_COLORS.bgPanel }}>
-                    <AthleteRow score={s.redScore} flatColor={SCORE_COLORS.red} isLeading={s.leadingSide === "red"}
-                        rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
-                        athleteName="HONG" />
+                <motion.div className="flex flex-col" style={{ minWidth: panelMinWidth, backgroundColor: SCORE_COLORS.bgPanel }} variants={panelVariants}>
+                    <motion.div variants={rowRevealVariants}>
+                        <AthleteRow score={s.redScore} gamjeom={s.redGamjeom} flatColor={SCORE_COLORS.red} isLeading={s.leadingSide === "red"}
+                            rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
+                            athleteName="HONG" />
+                    </motion.div>
                     <div className="h-px bg-white/10" />
-                    <AthleteRow score={s.blueScore} flatColor={SCORE_COLORS.blue} isLeading={s.leadingSide === "blue"}
-                        rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
-                        athleteName="CHONG" />
-                </div>
-            </div>
+                    <motion.div variants={rowRevealVariants}>
+                        <AthleteRow score={s.blueScore} gamjeom={s.blueGamjeom} flatColor={SCORE_COLORS.blue} isLeading={s.leadingSide === "blue"}
+                            rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
+                            athleteName="CHONG" />
+                    </motion.div>
+                </motion.div>
+            </motion.div>
 
             {props.isReplay && (
-                <div className="self-start font-black tracking-[0.12em] rounded-[3px]" style={{
+                <motion.div className="self-start font-black tracking-[0.12em] rounded-[3px]" style={{
                     fontSize: badgeFontSize, padding: `${gap}px ${gap * 2}px`,
                     backgroundColor: SCORE_COLORS.accent, color: "#04121f",
-                }}>
+                }} variants={badgeVariants}>
                     INSTANT VIDEO REPLAY
-                </div>
+                </motion.div>
             )}
 
-            {/* Keyframe cho hiệu ứng nhấp nháy khi hết giờ — chỉ cần khai báo 1 lần */}
             <style jsx>{`
                 @keyframes score-overlay-blink {
                     0%, 100% { opacity: 1; }
                     50% { opacity: 0.35; }
                 }
             `}</style>
-        </div>
+        </motion.div>
     )
 }
 

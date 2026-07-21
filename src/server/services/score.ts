@@ -242,7 +242,9 @@ export function updatedScore(
 
     const scoreEvent: ScoreEvent = {
         blueScore: totalScore.totalBlue,
+        blueGamjeom: round.blueBreakdown.gamjeom + round.blueBreakdown.eejeom,
         redScore: totalScore.totalRed,
+        redGamjeom: round.redBreakdown.gamjeom + round.redBreakdown.eejeom,
         remainingMs: remainingMs,
         pointType: pointType,
         scoreChangeBy: scoreChangeBy,
