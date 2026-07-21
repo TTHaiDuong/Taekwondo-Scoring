@@ -21,7 +21,7 @@ export default function useScreenWakeLock() {
             try {
                 wakeLock = await navigator.wakeLock.request("screen")
             } catch (e) {
-                console.error(e)
+                console.error("[useScreenWakeLock]", (e as Error).name, (e as Error).message)
             }
         }
 

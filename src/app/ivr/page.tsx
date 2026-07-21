@@ -551,6 +551,25 @@ export default function Viewer() {
     useEffect(() => {
         totalAnchorRef.current = { value: 0, at: Date.now() }
         streamAliveRef.current = true
+
+        // MỚI: ước lượng lại positionSec NGAY LẬP TỨC khi chuyển sang phiên ghi
+        // hình khác (đổi camera, hoặc cùng camera nhưng session mới do
+        // restart/zoom/orientation). Nếu không làm điều này, positionSec vẫn
+        // giữ giá trị THUỘC CAMERA CŨ trong khoảng thời gian ngắn (cho tới khi
+        // rAF loop kịp đọc video.currentTime mới sau khi hls.js load xong nguồn
+        // mới) — kết hợp với activeRecording.startedAt đã đổi NGAY LẬP TỨC,
+        // wallClockTimeMs bị tính sai lệch tạm thời, khiến binary search trong
+        // useScoreOverlay/useTimerOverlay không tìm thấy entry hợp lệ (idx=-1)
+        // → ScoreOverlay ẩn đi rồi hiện lại ngay khi positionSec bắt kịp — đây
+        // chính là hiện tượng "nhấp nháy" khi chuyển camera.
+        //
+        // Ước lượng "khoảng cách tính từ lúc camera này bắt đầu quay tới hiện
+        // tại" làm giá trị tạm — vì mặc định mọi phiên mới đều ở/near live edge
+        // (jumpLive tự set isFollowingLive=true khi switchCamera), nên đây là
+        // xấp xỉ ĐÚNG cho tới khi rAF ghi đè bằng giá trị thật chính xác hơn.
+        if (activeRecording) {
+            setPositionSec(Math.max(0, (Date.now() - activeRecording.startedAt) / 1000))
+        }
     }, [activeRecording?.masterPlaylistUrl, activeRecording?.startedAt])
 
     const bumpControlsVisible = useCallback(() => {
@@ -576,7 +595,6 @@ export default function Viewer() {
     }, [activeCameraId, courtId])
 
     const jumpLive = useCallback(() => {
-        if (isFollowingLive) return
         const video = videoRef.current
         if (!video || !video.seekable || video.seekable.length === 0) return
         wasPlayingRef.current = true
@@ -732,6 +750,7 @@ export default function Viewer() {
                 wasPlayingRef.current = !video.paused   // giữ nguyên trạng thái play/pause sau khi seek
                 setLiveMode(false)                       // tua thủ công → rời live-mode
                 requestScrubSeek(video.currentTime + dir * 0.5, true)
+                if (controlsVisible) bumpControlsVisible()
             } else if (e.key === "0" || e.code === "Numpad0") {
                 // e.code === "Numpad0" bắt đúng phím 0 ở numpad kể cả khi
                 // NumLock tắt trên một số hệ điều hành (lúc đó e.key có thể
@@ -746,7 +765,7 @@ export default function Viewer() {
 
         window.addEventListener("keydown", handleKeyDown)
         return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [requestScrubSeek, jumpLive, setLiveMode])
+    }, [requestScrubSeek, jumpLive, setLiveMode, controlsVisible, bumpControlsVisible])
 
     const wallClockTimeMs = activeRecording
         ? activeRecording.startedAt + positionSec * 1000
@@ -757,8 +776,8 @@ export default function Viewer() {
 
     const isPageActive = usePageVisibility()
     useEffect(() => {
-        if (!isPageActive) jumpLive()
-    }, [isPageActive])
+        if (!isPageActive && !isFollowingLive) jumpLive()
+    }, [isPageActive, isFollowingLive])
 
     const containerRef = useRef<HTMLDivElement>(null)   // MỚI
     const videoRect = useVideoContentRect(containerRef, videoRef)   // MỚI

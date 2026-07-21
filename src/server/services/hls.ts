@@ -207,7 +207,7 @@ function spawnFFmpeg(hlsDir: string, key: string, inputFormat: string | null): C
     const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] })
 
     console.log(`[HLS] Spawn ffmpeg cho ${key} → ${hlsDir}`)
-    console.log(`[HLS] FFmpeg args:`, args.join(" "))
+    // console.log(`[HLS] FFmpeg args:`, args.join(" "))
 
 
     // BẮT BUỘC: nếu không có listener "error" trên stdin, mọi lỗi ghi vào pipe
