@@ -3,24 +3,26 @@
 import Hls, { Level } from "hls.js"
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useSearchParams } from "next/navigation"
-import { ScoreEvent } from "@/scripts/match-types"
+import { PointType, ScoreEvent } from "@/scripts/match-types"
 import { getSingletonSocket } from "@/scripts/global-client-io"
 import { getTimeString } from "@/components/MobileOperator"
 import usePageVisibility from "@/components/UsePageVisibility"
 import useVideoContentRect from "@/components/UseVideoContentRect"
 import { motion, AnimatePresence } from "framer-motion"
 
+// Import các Icon SVG theo yêu cầu
+import ArmorI from "@/assets/solid-armor.svg"
+import HelmetI from "@/assets/solid-helmet.svg"
+import PunchI from "@/assets/solid-punch.svg"
+
 // ============================================================
 // VIEWER — HLS-ONLY, kiểu YouTube Live
-//
-// Đã BỎ HẲN LiveKit. Chỉ còn 1 pipeline HLS phục vụ cả xem trực tiếp lẫn
-// tua lại: hls.js tự bám vào live edge (giống YouTube Live mặc định phát
-// ở mép mới nhất), người xem kéo seek bar lùi lại để "tua lại" trong cửa
-// sổ DVR, kéo về mép phải (hoặc bấm nút TRỰC TIẾP) để quay lại xem trực
-// tiếp. Không còn khái niệm "2 lớp video" (live/replay) tách biệt như
-// trước — chỉ 1 <video> duy nhất, logic đơn giản hơn nhiều và không còn
-// hiện tượng giật do 2 encoder tranh CPU ở phía camera.
 // ============================================================
+
+type HitIconItem = {
+    id: string
+    type: PointType
+}
 
 type RecordingInfo = {
     cameraId: string
@@ -28,14 +30,13 @@ type RecordingInfo = {
     zoom: number
     startedAt: number
     masterPlaylistUrl: string
-    totalDurationSec: number   // MỚI — từ server, không qua hls.js
-    lastSegmentAt: number | null   // MỚI
+    totalDurationSec: number
+    lastSegmentAt: number | null
 }
 
 type Status = "connecting" | "connected" | "error" | "no-publisher"
 
 const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 2] as const
-const LIVE_EDGE_THRESHOLD_SEC = 4
 const CONTROLS_HIDE_DELAY_MS = 3500
 const ZOOM_STEP = 0.5
 const ZOOM_MAX = 5
@@ -61,7 +62,6 @@ function fmtClock(sec: number): string {
     return `${m}:${s.toString().padStart(2, "0")}`
 }
 
-// ── Camera tab selector ──────────────────────────────────────
 function CameraTabs(props: { cameraIds: string[]; active: string; onSelect: (id: string) => void }) {
     if (props.cameraIds.length <= 1) return null
     return (
@@ -109,7 +109,7 @@ function SeekBar(props: {
     onScrubEnd: () => void
     isLiveEdge?: boolean
     isScrubbing: boolean
-    startedAt: number | null   // MỚI — epoch ms lúc camera bắt đầu quay, để suy ra giờ thực
+    startedAt: number | null
 }) {
     const barRef = useRef<HTMLDivElement>(null)
     const [isDragging, setDragging] = useState(false)
@@ -158,19 +158,10 @@ function SeekBar(props: {
     }
 
     const isLive = props.isLiveEdge ?? false
-
-    // Vị trí (giây, tính từ windowStartSec) đang được HIỂN THỊ — ưu tiên
-    // previewPct lúc đang kéo, giống hệt logic hiện có của chuỗi thời gian
-    // tương đối bên dưới, để 2 dòng chữ luôn đồng bộ với nhau.
     const displaySec = previewPct !== null
         ? (previewPct / 100) * total
         : (props.positionSec - props.windowStartSec)
 
-    // Giờ thực = mốc bắt đầu quay (startedAt) + vị trí hiện tại trong cửa
-    // sổ DVR (windowStartSec + displaySec) — CHÚ Ý cộng thêm windowStartSec
-    // vì displaySec chỉ là khoảng lệch so với đầu cửa sổ, không phải mốc 0
-    // tuyệt đối của toàn bộ bản ghi (windowStartSec trôi dần khi server xoá
-    // segment cũ khỏi playlist).
     const wallClockStr = props.startedAt !== null
         ? fmtWallClock(props.startedAt + (props.windowStartSec + displaySec) * 1000)
         : null
@@ -204,6 +195,7 @@ function SeekBar(props: {
         </div>
     )
 }
+
 function CameraControls(props: {
     zoom: number; paused: boolean
     onZoom: (dir: 1 | -1) => void
@@ -257,7 +249,6 @@ export default function Viewer() {
     const [status, setStatus] = useState<Status>("connecting")
     const [recordings, setRecordings] = useState<Map<string, RecordingInfo>>(new Map())
     const [activeCameraId, setActiveCameraId] = useState<string | null>(null)
-
     const [isPlaying, setPlaying] = useState(true)
 
     useEffect(() => {
@@ -286,17 +277,8 @@ export default function Viewer() {
 
     const cameraIds = Array.from(recordings.keys())
     const activeRecording = activeCameraId ? recordings.get(activeCameraId) ?? null : null
-
     const playPromiseRef = useRef<Promise<void> | null>(null)
 
-    // Bọc DUY NHẤT mọi lệnh play()/pause() trong toàn component qua 2 hàm này.
-    // Lý do: nếu gọi pause() trong lúc promise của play() trước đó CHƯA settle,
-    // trình duyệt reject promise đó với AbortError ("play() request was
-    // interrupted by a call to pause()") — không phải lỗi thực sự cần xử lý,
-    // nhưng nếu không ai bắt sẽ log ra console dưới dạng unhandled rejection.
-    // safePlay/safePause đảm bảo LUÔN đợi play() cũ settle trước khi pause(),
-    // và LUÔN catch mọi play() — loại bỏ hoàn toàn lỗi này tận gốc, thay vì
-    // phải nhớ thêm .catch() thủ công ở từng nơi gọi.
     const safePlay = useCallback((video: HTMLVideoElement) => {
         const p = video.play()
         playPromiseRef.current = p
@@ -308,28 +290,22 @@ export default function Viewer() {
 
     const safePause = useCallback(async (video: HTMLVideoElement) => {
         if (playPromiseRef.current) {
-            await playPromiseRef.current.catch(() => { })   // đợi play() cũ settle trước
+            await playPromiseRef.current.catch(() => { })
         }
         video.pause()
     }, [])
 
     const [isScrubbing, setScrubbing] = useState(false)
     const wasPlayingRef = useRef(false)
-
-    // Cập nhật vị trí của SeekBar
     const isScrubbingRef = useRef(false)
-
     const [isFollowingLive, setFollowingLive] = useState(true)
     const isFollowingLiveRef = useRef(true)
 
     const setLiveMode = useCallback((value: boolean) => {
-        isFollowingLiveRef.current = value   // gán NGAY, đồng bộ — dùng trong closure của interval/keydown
+        isFollowingLiveRef.current = value
         setFollowingLive(value)
     }, [])
 
-    // Đồng bộ ref với state mỗi khi state đổi — nhưng quan trọng hơn, các nơi
-    // SET giá trị (handleScrubStart, requestScrubSeek, handleScrubEnd) sẽ gán
-    // isScrubbingRef.current TRỰC TIẾP, ĐỒNG BỘ, không đợi React re-render.
     useEffect(() => {
         isScrubbingRef.current = isScrubbing
     }, [isScrubbing])
@@ -339,14 +315,14 @@ export default function Viewer() {
         if (!video) return
         let raf: number
         function loop() {
-            if (!isScrubbingRef.current) {   // đọc từ REF — luôn là giá trị mới nhất, không có độ trễ
+            if (!isScrubbingRef.current) {
                 setPositionSec(video!.currentTime)
             }
             raf = requestAnimationFrame(loop)
         }
         raf = requestAnimationFrame(loop)
         return () => cancelAnimationFrame(raf)
-    }, [])   // không cần phụ thuộc isScrubbing nữa — loop chạy 1 lần duy nhất, tự đọc ref mỗi frame
+    }, [])
 
     useEffect(() => {
         const video = videoRef.current
@@ -355,14 +331,6 @@ export default function Viewer() {
             if (!video.seekable || video.seekable.length === 0) return
             setWindowStartSec(video.seekable.start(0))
             setWindowEndSec(video.seekable.end(0))
-            // KHÔNG còn điều kiện chặn isScrubbingRef nữa — window luôn cập
-            // nhật đều mỗi giây, kể cả khi đang kéo. Điều này AN TOÀN vì
-            // displayPercent trong SeekBar dùng previewPct (số cố định 0-100
-            // theo vị trí ngón tay) khi đang kéo — không phụ thuộc total, nên
-            // window thay đổi ngầm bên dưới không gây giật hình. Chỉ khi thả
-            // tay và previewPct bị xóa, UI mới rơi về committedPercent — lúc
-            // đó windowEndSec đã LUÔN cập nhật liên tục, không có khoảng dồn
-            // cục nào để "bắt kịp" đột ngột.
         }
         tick()
         const id = setInterval(tick, 1000)
@@ -371,17 +339,14 @@ export default function Viewer() {
 
     const pendingSeekRef = useRef<number | null>(null)
     const isSeekingRef = useRef(false)
-    const isFinalRef = useRef(false)              // ← khai báo TRƯỚC requestScrubSeek
+    const isFinalRef = useRef(false)
     const settleTimerRef = useRef<ReturnType<typeof setTimeout>>(null)
 
     const requestScrubSeek = useCallback((sec: number, isFinal = false) => {
         const video = videoRef.current
         if (!video) return
         pendingSeekRef.current = sec
-        isFinalRef.current = isFinal   // LUÔN cập nhật, kể cả khi thoát sớm bên dưới —
-        // đảm bảo lần gọi MỚI NHẤT luôn thắng, không bị
-        // "khóa cứng" vào isFinal của lần gọi đã khởi động chuỗi doSeek
-
+        isFinalRef.current = isFinal
         setPositionSec(sec)
 
         if (isSeekingRef.current) return
@@ -400,7 +365,7 @@ export default function Viewer() {
                 } else {
                     isSeekingRef.current = false
                     clearTimeout(settleTimerRef.current || undefined)
-                    if (isFinalRef.current) {   // ← đọc REF thay vì tham số closure cũ
+                    if (isFinalRef.current) {
                         settleTimerRef.current = setTimeout(() => {
                             isScrubbingRef.current = false
                             setScrubbing(false)
@@ -415,19 +380,13 @@ export default function Viewer() {
     }, [safePlay])
 
     const handleScrubStart = useCallback(async () => {
-        const alreadyScrubbing = isScrubbingRef.current   // đọc TRƯỚC khi set true bên dưới
-
+        const alreadyScrubbing = isScrubbingRef.current
         isScrubbingRef.current = true
         setScrubbing(true)
-        setLiveMode(false)   // MỚI: bất kỳ thao tác tua nào cũng rời khỏi live-mode
+        setLiveMode(false)
 
         const video = videoRef.current
         if (video) {
-            // CHỈ chụp trạng thái play/pause ở lần ĐẦU TIÊN của cả chuỗi tua.
-            // Nếu đã đang scrub (vd: bấm mũi tên liên tiếp trước khi seek trước
-            // kịp settle), video có thể đã bị pause bởi chính lần gọi trước đó —
-            // đọc lại video.paused lúc này sẽ luôn ra `true` và xoá mất ý định
-            // ban đầu "video đang phát", khiến video không bao giờ tự chạy lại.
             if (!alreadyScrubbing) {
                 wasPlayingRef.current = !video.paused
             }
@@ -436,16 +395,9 @@ export default function Viewer() {
     }, [safePause, setLiveMode])
 
     const handleScrubEnd = useCallback(() => {
-        // Không seek gì thêm ở đây — pointerup của SeekBar đã gọi
-        // onScrubMove(sec, final vị trí) ngay trước khi onScrubEnd() được gọi.
-        // Ta chỉ cần đánh dấu lần seek đang treo (nếu có) là "final", để
-        // requestScrubSeek tự mở khóa UI sau khi ổn định.
         isFinalRef.current = true
-
-        // Trường hợp không có seek nào đang treo (ví dụ người dùng chạm rồi
-        // nhấc tay ngay tại chỗ, không di chuyển) → mở khóa ngay, không cần đợi.
         if (!isSeekingRef.current && pendingSeekRef.current === null) {
-            isScrubbingRef.current = false   // gán NGAY trước
+            isScrubbingRef.current = false
             setScrubbing(false)
             if (wasPlayingRef.current && videoRef.current) {
                 safePlay(videoRef.current)
@@ -453,10 +405,6 @@ export default function Viewer() {
         }
     }, [safePlay])
 
-    // ── Poll danh sách camera đang có bản ghi HLS ──
-    // Đây giờ là NGUỒN DUY NHẤT cho cả danh sách camera lẫn trạng thái
-    // live/replay — không còn tách biệt "liveCameras" (LiveKit) và
-    // "recordings" (HLS) như kiến trúc cũ.
     useEffect(() => {
         let cancelled = false
         async function poll() {
@@ -497,7 +445,6 @@ export default function Viewer() {
                 liveMaxLatencyDurationCount: 9999,
             })
             hlsRef.current = hls
-
             hls.loadSource(url)
             hls.attachMedia(video)
             hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => setLevels(data.levels))
@@ -511,9 +458,7 @@ export default function Viewer() {
         return () => { hlsRef.current?.destroy(); hlsRef.current = null }
     }, [activeRecording?.masterPlaylistUrl, activeRecording?.startedAt])
 
-    // "Stream còn sống" = lastSegmentAt gần đây (trong vòng vài lần
-    // SEGMENT_DURATION) — không cần hls.js báo live=false nữa.
-    const STALE_THRESHOLD_MS = 8000   // ~4× SEGMENT_DURATION (2s), đủ dung sai
+    const STALE_THRESHOLD_MS = 8000
     function isStreamAlive(recording: RecordingInfo | null): boolean {
         if (!recording || recording.lastSegmentAt === null) return false
         return Date.now() - recording.lastSegmentAt < STALE_THRESHOLD_MS
@@ -538,10 +483,6 @@ export default function Viewer() {
         return () => clearInterval(id)
     }, [activeRecording, status])
 
-    // Mỗi khi poll /api/hls/cameras trả về dữ liệu mới (đã có sẵn interval
-    // POLL_INTERVAL_MS=3000), cập nhật lại mốc neo NẾU totalDurationSec thật
-    // sự đổi — hoàn toàn không phụ thuộc hls.js, nên chạy giống hệt nhau trên
-    // mọi trình duyệt kể cả Safari macOS (native HLS).
     useEffect(() => {
         if (!activeRecording) return
         if (activeRecording.totalDurationSec !== totalAnchorRef.current.value) {
@@ -578,21 +519,17 @@ export default function Viewer() {
         const video = videoRef.current
         if (!video || !video.seekable || video.seekable.length === 0) return
         wasPlayingRef.current = true
-        setLiveMode(true)   // MỚI: chỉ nơi này bật lại — đúng yêu cầu "phải bấm nút mới về live"
+        setLiveMode(true)
         requestScrubSeek(video.seekable.end(0), true)
         setSpeedState(1)
         video.playbackRate = 1
-    }, [requestScrubSeek, setLiveMode, isFollowingLive])
+    }, [requestScrubSeek, setLiveMode])
 
     const togglePlay = useCallback(() => {
         const video = videoRef.current
         if (!video) return
-        if (video.paused) {
-            safePlay(video)
-        }
-        else {
-            safePause(video)
-        }
+        if (video.paused) { safePlay(video) }
+        else { safePause(video) }
     }, [safePlay, safePause])
 
     const setSpeed = useCallback((s: number) => {
@@ -637,36 +574,6 @@ export default function Viewer() {
 
     const markStart = useCallback(() => setMarkIn(positionSec), [positionSec])
 
-    // const saveClip = useCallback(async () => {
-    //     if (!activeCameraId || !activeRecording || markIn === null) return
-    //     const start = Math.min(markIn, positionSec)
-    //     const duration = Math.max(0.5, Math.abs(positionSec - markIn))
-    //     setSavingClip(true)
-    //     try {
-    //         const res = await fetch(`${serverBase()}/api/hls/clip`, {
-    //             method: "POST",
-    //             headers: { "Content-Type": "application/json" },
-    //             body: JSON.stringify({
-    //                 courtId, cameraId: activeCameraId, startedAt: activeRecording.startedAt,
-    //                 startSec: start - windowStartSec, durationSec: duration,
-    //                 rendition: "source",
-    //             }),
-    //         })
-    //         const data = await res.json()
-    //         if (data.url) {
-    //             const a = document.createElement("a")
-    //             a.href = `${serverBase()}${data.url}`
-    //             a.download = ""
-    //             document.body.appendChild(a); a.click(); a.remove()
-    //         } else {
-    //             alert(data.error || "Không thể xuất video")
-    //         }
-    //     } finally {
-    //         setSavingClip(false)
-    //         setMarkIn(null)
-    //     }
-    // }, [activeCameraId, activeRecording, markIn, positionSec, windowStartSec, courtId])
-
     const saveClip = useCallback(async () => {
         if (!activeCameraId || !activeRecording || markIn === null) return
         const start = Math.min(markIn, positionSec)
@@ -680,7 +587,7 @@ export default function Viewer() {
                     courtId, cameraId: activeCameraId, startedAt: activeRecording.startedAt,
                     startSec: start - windowStartSec, durationSec: duration,
                     rendition: "source",
-                    burnOverlay: true,   // ← THÊM DÒNG NÀY để bật burn-in
+                    burnOverlay: true,
                 }),
             })
             const data = await res.json()
@@ -689,7 +596,7 @@ export default function Viewer() {
                 a.href = `${serverBase()}${data.url}`
                 a.download = ""
                 document.body.appendChild(a); a.click(); a.remove()
-                if (data.warning) console.warn("[Clip]", data.warning)   // fallback không burn được
+                if (data.warning) console.warn("[Clip]", data.warning)
             } else {
                 alert(data.error || "Không thể xuất video")
             }
@@ -703,15 +610,7 @@ export default function Viewer() {
         setActiveCameraId(id)
         setMarkIn(null)
         setLiveMode(true)
-    }, [])
-
-    // const behindLive = windowEndSec - positionSec
-    // const isAtLiveEdge = behindLive < LIVE_EDGE_THRESHOLD_SEC
-
-    // const isAtLiveEdgeRef = useRef(isAtLiveEdge)
-    // useEffect(() => {
-    //     isAtLiveEdgeRef.current = isAtLiveEdge
-    // }, [isAtLiveEdge])
+    }, [setLiveMode])
 
     useEffect(() => {
         function isTypingTarget(el: EventTarget | null) {
@@ -727,14 +626,10 @@ export default function Viewer() {
             if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
                 e.preventDefault()
                 const dir = e.key === "ArrowLeft" ? -1 : 1
-                handleScrubStart()   // đặt isScrubbingRef=true + pause TRƯỚC khi seek — y hệt luồng kéo tay,
-                // chặn vòng lặp rAF ghi đè positionSec trong lúc đang seek
+                handleScrubStart()
                 requestScrubSeek(video.currentTime + dir * 0.5, true)
                 if (controlsVisible) bumpControlsVisible()
             } else if (e.key === "0" || e.code === "Numpad0") {
-                // e.code === "Numpad0" bắt đúng phím 0 ở numpad kể cả khi
-                // NumLock tắt trên một số hệ điều hành (lúc đó e.key có thể
-                // trả về "Insert" thay vì "0") — dùng e.code đảm bảo ổn định.
                 e.preventDefault()
                 jumpLive()
             } else if (e.code === "Space") {
@@ -745,22 +640,23 @@ export default function Viewer() {
 
         window.addEventListener("keydown", handleKeyDown)
         return () => window.removeEventListener("keydown", handleKeyDown)
-    }, [requestScrubSeek, jumpLive, setLiveMode, controlsVisible, bumpControlsVisible, handleScrubStart])
+    }, [requestScrubSeek, jumpLive, setLiveMode, controlsVisible, bumpControlsVisible, handleScrubStart, togglePlay])
 
     const wallClockTimeMs = activeRecording
         ? activeRecording.startedAt + positionSec * 1000
         : null
 
-    const currentScore = useScoreOverlay(courtId, wallClockTimeMs)
+    // Đã nâng cấp hook useScoreOverlay trả về cả điểm và mảng icon gần nhất
+    const { score: currentScore, redIcons, blueIcons } = useScoreOverlay(courtId, wallClockTimeMs)
     const { remainingMs: timerRemainingMs, hasStarted, isRunning } = useTimerOverlay(courtId, wallClockTimeMs)
 
     const isPageActive = usePageVisibility()
     useEffect(() => {
         if (!isPageActive && !isFollowingLive) jumpLive()
-    }, [isPageActive, isFollowingLive])
+    }, [isPageActive, isFollowingLive, jumpLive])
 
-    const containerRef = useRef<HTMLDivElement>(null)   // MỚI
-    const videoRect = useVideoContentRect(containerRef, videoRef)   // MỚI
+    const containerRef = useRef<HTMLDivElement>(null)
+    const videoRect = useVideoContentRect(containerRef, videoRef)
 
     return (
         <div ref={containerRef} className="fixed inset-0 bg-black flex flex-col overflow-hidden select-none"
@@ -771,11 +667,13 @@ export default function Viewer() {
 
             <ScoreOverlay
                 score={currentScore}
+                redIcons={redIcons}
+                blueIcons={blueIcons}
                 timerRemainingMs={timerRemainingMs}
                 isReplay={!isFollowingLive}
                 hasStarted={hasStarted}
-                videoRect={videoRect}   // MỚI
-                isRunning={isRunning}   // MỚI
+                videoRect={videoRect}
+                isRunning={isRunning}
             />
 
             <div className={`absolute top-0 left-0 right-0 z-10 flex flex-col transition-opacity duration-300
@@ -804,7 +702,6 @@ export default function Viewer() {
                 </div>
             )}
 
-            {/* ── Thanh điều khiển kiểu YouTube Live: seek bar + play/speed + camera controls ── */}
             {activeCameraId && activeRecording && (
                 <div className={`absolute bottom-0 left-0 right-0 z-[20] flex flex-col gap-[10px]
                     px-[16px] pt-[28px] pb-[14px]
@@ -822,7 +719,7 @@ export default function Viewer() {
                         isLiveEdge={isFollowingLive}
                         onScrubMove={requestScrubSeek}
                         isScrubbing={isScrubbing}
-                        startedAt={activeRecording?.startedAt ?? null}   // MỚI
+                        startedAt={activeRecording?.startedAt ?? null}
                     />
 
                     <div className="flex items-center justify-between gap-[10px]">
@@ -885,17 +782,16 @@ export default function Viewer() {
 
 type ScoreHistoryEntry = {
     timestamp: number
-    event: ScoreEvent | null
+    event: (ScoreEvent & { lastHitType?: PointType }) | null
 }
 
+// ── Hook suy luận / truy vết các đòn đánh diễn ra trong vòng 2.5s ──
 function useScoreOverlay(courtId: string, wallClockTimeMs: number | null) {
     const [entries, setEntries] = useState<ScoreHistoryEntry[]>()
 
     useEffect(() => {
         const socket = getSingletonSocket()
-
         socket.emit("court:join", { courtId })
-
         socket.emit("score:events:get", { courtId }, (entries: ScoreHistoryEntry[]) => {
             setEntries(entries)
         })
@@ -908,11 +804,10 @@ function useScoreOverlay(courtId: string, wallClockTimeMs: number | null) {
         return () => { socket.off("score:event:add", onAdd) }
     }, [courtId])
 
-    // Tìm entry MỚI NHẤT ≤ wallClockTimeMs — nếu event là null nghĩa là
-    // tại thời điểm này điểm đã bị RESET, trả về null để ScoreOverlay tự
-    // hiển thị 0-0 mặc định (giống cách hasStarted xử lý bên timer).
     return useMemo(() => {
-        if (wallClockTimeMs === null || !entries || entries.length === 0) return null
+        if (wallClockTimeMs === null || !entries || entries.length === 0) {
+            return { score: null, redIcons: [], blueIcons: [] }
+        }
 
         let lo = 0, hi = entries.length - 1, idx = -1
         while (lo <= hi) {
@@ -920,21 +815,101 @@ function useScoreOverlay(courtId: string, wallClockTimeMs: number | null) {
             if (entries[mid].timestamp <= wallClockTimeMs) { idx = mid; lo = mid + 1 }
             else hi = mid - 1
         }
-        if (idx === -1) return null
+        if (idx === -1) return { score: null, redIcons: [], blueIcons: [] }
 
-        return entries[idx].event   // có thể là null — ScoreOverlay đã xử lý sẵn
+        const currentScore = entries[idx].event
+
+        const redIcons: HitIconItem[] = []
+        const blueIcons: HitIconItem[] = []
+
+        if (currentScore) {
+            // Lấy danh sách các icon cần xuất hiện trong khoảng 2.5s tính tới wallClockTimeMs
+            const DISPLAY_WINDOW_MS = 2500
+            const windowStart = wallClockTimeMs - DISPLAY_WINDOW_MS
+            const windowEnd = wallClockTimeMs
+
+            for (let i = 0; i <= idx; i++) {
+                const entry = entries[i]
+                if (entry.timestamp < windowStart) continue
+                if (entry.timestamp > windowEnd) break
+
+                const currEv = entry.event
+                if (!currEv) continue
+
+                // Chỉ hiển thị icon khi có hành động tăng điểm và có pointType hợp lệ
+                if (currEv.action === "increase" && currEv.pointType) {
+                    const iconItem: HitIconItem = {
+                        id: `${currEv.side}-${entry.timestamp}-${i}`,
+                        type: currEv.pointType, // Lấy chuẩn từ PointType
+                    }
+
+                    if (currEv.side === "red") {
+                        redIcons.push(iconItem)
+                    } else if (currEv.side === "blue") {
+                        blueIcons.push(iconItem)
+                    }
+                }
+            }
+        }
+        return { score: currentScore, redIcons, blueIcons }
     }, [entries, wallClockTimeMs])
 }
 
-// ── Design tokens dùng chung (để sau này tái sử dụng khi burn-in vào video) ──
+// ── Design tokens dùng chung ──
 const SCORE_COLORS = {
-    bgPanel: "#0a1230",       // nền phẳng, không gradient
+    bgPanel: "#0a1230",
     bgClock: "#0d1a3f",
-    accent: "#22d3ee",        // cyan cho viền/label
+    accent: "#22d3ee",
     red: "#e11d2e",
     blue: "#1d6fe1",
     textDim: "rgba(255,255,255,0.45)",
 } as const
+
+// ── Component hiển thị Badge Icon tương ứng ──
+function HitIconBadge({ type, size }: { type: PointType; size: number }) {
+    switch (type) {
+        case "trunkKick":
+            return <ArmorI style={{ width: size, height: size }} className="text-white fill-current shrink-0" />
+        case "headKick":
+            return <HelmetI style={{ width: size, height: size }} className="text-white fill-current shrink-0" />
+        case "punch":
+            return <PunchI style={{ width: size, height: size }} className="text-white fill-current shrink-0" />
+        case "spinTrunk":
+            return (
+                <div className="relative flex items-center justify-center">
+                    <ArmorI style={{ width: size, height: size }} className="text-amber-300 fill-current shrink-0" />
+                    <span className="absolute -top-[2px] -right-[4px] font-black text-[9px] text-amber-400 bg-black/80 rounded-full px-[2px] leading-none">
+                        ↻
+                    </span>
+                </div>
+            )
+        case "spinHead":
+            return (
+                <div className="relative flex items-center justify-center">
+                    <HelmetI style={{ width: size, height: size }} className="text-amber-300 fill-current shrink-0" />
+                    <span className="absolute -top-[2px] -right-[4px] font-black text-[9px] text-amber-400 bg-black/80 rounded-full px-[2px] leading-none">
+                        ↻
+                    </span>
+                </div>
+            )
+        case "gamjeom":
+            return (
+                <div className="flex items-center justify-center text-white font-black rounded-[2px] leading-none"
+                    style={{ width: size * 0.7, height: size, fontSize: size * 0.65 }}>
+                    1G
+                </div>
+            )
+        case "eejeom":
+            return (
+                <div className="flex items-center justify-center text-white font-black leading-none"
+                    style={{ width: size * 0.7, height: size, fontSize: size * 0.65 }}>
+                    2G
+                </div>
+            )
+        default:
+            return <ArmorI style={{ width: size, height: size }} className="text-white fill-current shrink-0" />
+    }
+}
 
 function AthleteRow(props: {
     score: number
@@ -945,9 +920,10 @@ function AthleteRow(props: {
     scoreBoxWidth: number
     scoreFontSize: number
     athleteName: string
+    activeHitIcons?: HitIconItem[]
 }) {
     return (
-        <div className="flex items-stretch" style={{ height: props.rowHeight }}>
+        <div className="relative flex items-stretch" style={{ height: props.rowHeight }}>
             <div className="flex items-center justify-center shrink-0" style={{ width: props.rowHeight * 0.85, padding: `0 ${props.rowHeight * 0.15}px` }}>
                 <div className="rounded-[2px] bg-white/10 border border-white/15"
                     style={{ width: props.rowHeight * 0.55, height: props.rowHeight * 0.4 }} />
@@ -961,31 +937,50 @@ function AthleteRow(props: {
                 </span>
             </div>
 
-            {/* Gamjeom — NGAY SAU ô điểm chính, ô riêng biệt để không lẫn với
-                điểm kỹ thuật. Chỉ hiện khi > 0, giữ chỗ bằng width cố định để
-                hàng RED/BLUE không lệch chiều rộng khác nhau khi 1 bên có
-                gamjeom còn bên kia không. */}
+            {/* Gamjeom */}
             <div className="flex items-center justify-center shrink-0"
                 style={{
                     width: props.rowHeight * 0.6,
                     backgroundColor: props.gamjeom > 0
-                        ? (props.gamjeom >= 4 ? "rgba(225,29,46,0.9)" : "rgba(255,255,255,0.12)")
+                        ? "rgba(255,255,255,0.12)"
                         : "transparent",
                 }}>
                 {props.gamjeom > 0 && (
                     <span className="text-center font-black tabular-nums leading-none"
-                        style={{ fontSize: props.rowHeight * 0.4, color: props.gamjeom >= 4 ? "#fff" : "rgba(255,255,255,0.75)" }}>
+                        style={{ fontSize: props.rowHeight * 0.4, color: props.gamjeom >= 4 ? "rgba(225,29,46,1)" : "rgba(255,255,255,0.75)" }}>
                         {props.gamjeom}
                     </span>
                 )}
+            </div>
+
+            {/* ── CÁC ICON HIỂN THỊ ĐIỂM SỐ VỪA GHI ── */}
+            {/* Nằm ngoài background (phía bên phải), xếp hàng ngang cùng dòng AthleteRow */}
+            <div className="absolute left-full top-0 bottom-0 ml-2 flex items-center gap-1.5 pointer-events-none z-10">
+                <AnimatePresence>
+                    {props.activeHitIcons?.map((hit) => (
+                        <motion.div
+                            key={hit.id}
+                            initial={{ opacity: 0, scale: 0.4, x: -12 }}
+                            animate={{ opacity: 1, scale: 1, x: 0 }}
+                            exit={{ opacity: 0, scale: 0.4, x: 12 }}
+                            transition={{ duration: 0.25, ease: "easeOut" }}
+                            className="flex items-center justify-center bg-black/60 border border-white/20 rounded-[4px] shadow-lg backdrop-blur-md"
+                            style={{
+                                width: props.rowHeight * 0.85,
+                                height: props.rowHeight * 0.85,
+                                padding: props.rowHeight * 0.1,
+                            }}
+                        >
+                            <HitIconBadge type={hit.type} size={props.rowHeight * 0.58} />
+                        </motion.div>
+                    ))}
+                </AnimatePresence>
             </div>
         </div>
     )
 }
 
-// ── Variants cho animation — cascade theo đúng thứ tự:
-// container (toàn khối) → group (clock+panel) → clock trước, panel sau →
-// panel → row 1 trước, row 2 sau (stagger lồng nhau qua framer-motion).
+// ── Variants cho animation ──
 const overlayContainerVariants = {
     hidden: {},
     visible: { transition: { staggerChildren: 0.15 } },
@@ -996,9 +991,6 @@ const groupVariants = {
     visible: { transition: { staggerChildren: 0.1 } },
 }
 
-// Đồng hồ "mọc" ra từ đầu nhọn bên trái — scaleX từ 0, neo transform-origin
-// bên trái để đúng đầu nhọn của clip-path polygon đứng yên, phần thân xoè
-// rộng ra bên phải.
 const clockVariants = {
     hidden: { opacity: 0, scaleX: 0 },
     visible: {
@@ -1012,14 +1004,11 @@ const panelVariants = {
     visible: { transition: { staggerChildren: 0.09 } },
 }
 
-// Mỗi hàng athlete "trượt/mở" từ mép TRONG (sát đồng hồ, bên trái) ra
-// ngoài — dùng clip-path wipe thay vì transform đơn thuần để có cảm giác
-// "kéo màn hình thể thao ra" giống đồ hoạ broadcast thật, không phải chỉ
-// trượt vị trí.
+// Cho phép hiển thị icon nổi rộng ra ngoài bên phải mà không bị clipPath cản trở
 const rowRevealVariants = {
     hidden: { clipPath: "inset(0 100% 0 0)" },
     visible: {
-        clipPath: "inset(0 0% 0 0)",
+        clipPath: "inset(0 -300px 0 0)",
         transition: { duration: 0.38, ease: [0.22, 1, 0.36, 1] as const },
     },
 }
@@ -1031,6 +1020,8 @@ const badgeVariants = {
 
 function ScoreOverlay(props: {
     score: ScoreEvent | null
+    redIcons?: HitIconItem[]
+    blueIcons?: HitIconItem[]
     timerRemainingMs: number | null
     roundNo?: number
     matchNo?: number
@@ -1050,13 +1041,15 @@ function ScoreOverlay(props: {
 
 function ScoreOverlayContent(props: {
     score: ScoreEvent | null
+    redIcons?: HitIconItem[]
+    blueIcons?: HitIconItem[]
     timerRemainingMs: number | null
     roundNo?: number
     matchNo?: number
     isReplay?: boolean
     hasStarted: boolean
     videoRect: { left: number; top: number; width: number; height: number } | null
-    isRunning: boolean   // MỚI
+    isRunning: boolean
 }) {
     if (!props.hasStarted || !props.videoRect) return null
 
@@ -1068,56 +1061,37 @@ function ScoreOverlayContent(props: {
         : "0:00"
 
     const isTimeUp = props.timerRemainingMs !== null && props.timerRemainingMs <= 0
-    const isPaused = !props.isRunning && !isTimeUp   // tạm dừng giữa chừng, KHÔNG phải hết giờ
+    const isPaused = !props.isRunning && !isTimeUp
 
     const { width: vw, height: vh } = props.videoRect
 
-    // ── Bước 1: hệ số scale GỐC theo chiều cao video, có sàn/trần tuyệt
-    // đối để overlay không bao giờ bé/to bất thường dù vh cực nhỏ/cực lớn.
-    const MIN_SCALE = 40    // ứng với video rất thấp (vd cửa sổ thu nhỏ)
-    const MAX_SCALE = 90    // ứng với video rất cao (vd fullscreen 4K)
+    const MIN_SCALE = 40
+    const MAX_SCALE = 90
     const rawScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, vh * 0.09))
 
-    // ── Bước 2: TOÀN BỘ layout của overlay là các TỈ LỆ CỐ ĐỊNH nhân với
-    // scale — nghĩa là width luôn tỉ lệ đúng với height của overlay theo
-    // đúng 1 "khuôn hình" thiết kế, không tính riêng lẻ từng phần tử theo
-    // vh nữa (tránh méo tỉ lệ khi vh thay đổi).
-    const clockWidthRatio = 1.7      // clockWidth = scale * 1.7
+    const clockWidthRatio = 1.7
     const rowHeightRatio = 0.8
-    const panelMinWidthRatio = 3.8   // panel (2 hàng VĐV) rộng tối thiểu = scale * 3.8
+    const panelMinWidthRatio = 3.8
 
-    // Tổng chiều rộng ước tính của TOÀN BỘ khối overlay (clock + panel),
-    // dùng để kiểm tra ràng buộc theo chiều rộng video ở bước 3.
     const estimatedTotalWidth = (clockWidth: number, panelWidth: number) => clockWidth + panelWidth
 
-    // ── Bước 3: RÀNG BUỘC theo chiều rộng video — nếu video có tỷ lệ cực
-    // đoan (rất cao & hẹp, như quay dọc điện thoại), overlay tính theo vh
-    // thuần có thể RỘNG HƠN cả video → cần scale down toàn bộ theo 1 hệ số
-    // chung để tổng chiều rộng overlay không vượt quá 1 phần video.
-    const MAX_OVERLAY_WIDTH_RATIO = 0.55   // overlay rộng tối đa 55% chiều rộng video
+    const MAX_OVERLAY_WIDTH_RATIO = 0.55
     const maxAllowedTotalWidth = vw * MAX_OVERLAY_WIDTH_RATIO
 
     const rawClockWidth = rawScale * clockWidthRatio
     const rawPanelWidth = rawScale * panelMinWidthRatio
     const rawTotalWidth = estimatedTotalWidth(rawClockWidth, rawPanelWidth)
 
-    // Nếu vượt ngưỡng, tính lại 1 scale NHỎ HƠN sao cho tổng chiều rộng vừa
-    // đúng giới hạn — nhân đều lên MỌI kích thước để giữ nguyên tỉ lệ nội
-    // bộ của overlay (không bị méo hình, chỉ nhỏ lại đồng đều).
     const widthConstrainedScale = rawTotalWidth > maxAllowedTotalWidth
         ? rawScale * (maxAllowedTotalWidth / rawTotalWidth)
         : rawScale
 
-    // Cũng ràng buộc ngược lại: nếu video RẤT RỘNG nhưng THẤP (vd ultrawide
-    // 21:9 nhưng cửa sổ dẹt), đừng để overlay quá nhỏ so với video — đặt
-    // sàn tối thiểu theo % chiều rộng video để overlay vẫn đọc được.
     const MIN_OVERLAY_WIDTH_RATIO = 0.12
     const minAllowedTotalWidth = vw * MIN_OVERLAY_WIDTH_RATIO
     const finalScale = rawTotalWidth < minAllowedTotalWidth
         ? Math.min(MAX_SCALE, widthConstrainedScale * (minAllowedTotalWidth / Math.max(1, rawTotalWidth)))
         : widthConstrainedScale
 
-    // ── Bước 4: mọi kích thước hiển thị đều tính từ CÙNG 1 finalScale ──
     const clockWidth = finalScale * clockWidthRatio
     const rowHeight = finalScale * rowHeightRatio
     const scoreBoxWidth = finalScale * 0.8
@@ -1133,12 +1107,12 @@ function ScoreOverlayContent(props: {
     const overlayLeftOffset = props.videoRect.left + vw * 0.03
     const overlayTopOffset = props.videoRect.top + vh * 0.03
 
-    const timeColor = isTimeUp ? "#f87171" /* đỏ nhạt */ : (isPaused ? "rgba(255,255,255,0.55)" : "#fff")
+    const timeColor = isTimeUp ? "#f87171" : (isPaused ? "rgba(255,255,255,0.55)" : "#fff")
     const pauseIconSize = finalScale * 0.16
 
     return (
         <motion.div
-            className="absolute z-[5] pointer-events-none select-none flex flex-col"
+            className="absolute z-[5] pointer-events-none select-none flex flex-col overflow-visible"
             style={{ left: overlayLeftOffset, top: overlayTopOffset, gap }}
             initial="hidden"
             animate="visible"
@@ -1146,7 +1120,7 @@ function ScoreOverlayContent(props: {
             variants={overlayContainerVariants}
         >
             <motion.div
-                className="flex items-stretch overflow-hidden rounded-[5px]"
+                className="flex items-stretch rounded-[5px] overflow-visible"
                 style={{ boxShadow: "0 3px 10px rgba(0,0,0,0.4)" }}
                 variants={groupVariants}
             >
@@ -1190,17 +1164,33 @@ function ScoreOverlayContent(props: {
                     </span>
                 </motion.div>
 
-                <motion.div className="flex flex-col" style={{ minWidth: panelMinWidth, backgroundColor: SCORE_COLORS.bgPanel }} variants={panelVariants}>
+                <motion.div className="flex flex-col overflow-visible" style={{ minWidth: panelMinWidth, backgroundColor: SCORE_COLORS.bgPanel }} variants={panelVariants}>
                     <motion.div variants={rowRevealVariants}>
-                        <AthleteRow score={s.redScore} gamjeom={s.redGamjeom} flatColor={SCORE_COLORS.red} isLeading={s.leadingSide === "red"}
-                            rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
-                            athleteName="HONG" />
+                        <AthleteRow
+                            score={s.redScore}
+                            gamjeom={s.redGamjeom}
+                            flatColor={SCORE_COLORS.red}
+                            isLeading={s.leadingSide === "red"}
+                            rowHeight={rowHeight}
+                            scoreBoxWidth={scoreBoxWidth}
+                            scoreFontSize={scoreFontSize}
+                            athleteName="HONG"
+                            activeHitIcons={props.redIcons}
+                        />
                     </motion.div>
                     <div className="h-px bg-white/10" />
                     <motion.div variants={rowRevealVariants}>
-                        <AthleteRow score={s.blueScore} gamjeom={s.blueGamjeom} flatColor={SCORE_COLORS.blue} isLeading={s.leadingSide === "blue"}
-                            rowHeight={rowHeight} scoreBoxWidth={scoreBoxWidth} scoreFontSize={scoreFontSize}
-                            athleteName="CHONG" />
+                        <AthleteRow
+                            score={s.blueScore}
+                            gamjeom={s.blueGamjeom}
+                            flatColor={SCORE_COLORS.blue}
+                            isLeading={s.leadingSide === "blue"}
+                            rowHeight={rowHeight}
+                            scoreBoxWidth={scoreBoxWidth}
+                            scoreFontSize={scoreFontSize}
+                            athleteName="CHONG"
+                            activeHitIcons={props.blueIcons}
+                        />
                     </motion.div>
                 </motion.div>
             </motion.div>
@@ -1230,7 +1220,6 @@ type TimerEvent = {
     isRunning: boolean
 }
 
-// MỚI: khớp với TimerHistoryEntry ở server
 type TimerHistoryEntry = {
     timestamp: number
     event: TimerEvent | null
@@ -1272,10 +1261,6 @@ function useTimerOverlay(courtId: string, wallClockTimeMs: number | null) {
             ? Math.max(0, evt.remainingMs - (wallClockTimeMs - evt.timestamp))
             : evt.remainingMs
 
-        // Đồng hồ được coi là "đang chạy" chỉ khi evt.isRunning=true VÀ
-        // vẫn còn thời gian thực tế tại thời điểm này — nếu remainingMs đã
-        // về 0 (dù evt.isRunning vẫn true do server chưa kịp clearInterval),
-        // coi như đã HẾT GIỜ chứ không phải đang chạy.
         const isRunning = evt.isRunning && remainingMs > 0
 
         return { remainingMs, hasStarted: true, isRunning }
