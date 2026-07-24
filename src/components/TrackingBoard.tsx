@@ -1,13 +1,14 @@
 "use client"
 
 import { getSingletonSocket } from "@/scripts/global-client-io"
-import { emptyBreakdown, inferRoundWinner, RoundWinner, ScoreBreakdown, Side, WinCode } from "@/scripts/match-types"
+import { emptyBreakdown, inferScoreLeader, ScoreLeader, ScoreBreakdown, Side, WinCode } from "@/scripts/match-types"
 import { useEffect, useState } from "react"
 import { io, Socket } from "socket.io-client"
-import useScreenWakeLock from "./ScreenWakeLock"
+import useScreenWakeLock from "./UseScreenWakeLock"
 import FitText from "./FitText"
 import { JudgePressStack } from "./JudgePress"
 import useAutoHideCursor from "./AutoHideCursor"
+import { useSearchParams } from "next/navigation"
 
 // ============================================================
 // SCOREBOARD DISPLAY — Bảng theo dõi điểm số
@@ -20,7 +21,7 @@ import useAutoHideCursor from "./AutoHideCursor"
 function useScoreboard(courtId: string) {
     const [blueScore, setBlueScore] = useState<ScoreBreakdown>(emptyBreakdown())
     const [redScore, setRedScore] = useState<ScoreBreakdown>(emptyBreakdown())
-    const [roundWinner, setRoundWinner] = useState<RoundWinner>({ totalBlue: 0, totalRed: 0, winner: null })
+    const [roundWinner, setRoundWinner] = useState<ScoreLeader>()
     const [remainingMs, setRemainingMs] = useState(120_000)
     const [roundMs, setRoundMs] = useState(120_000)
     const [timerRunning, setTimerRunning] = useState(false)
@@ -39,7 +40,11 @@ function useScoreboard(courtId: string) {
     const [weight, setWeight] = useState("")
 
     useEffect(() => {
-        const scoreResult = inferRoundWinner(blueScore, redScore)
+        if (!blueScore || !redScore) {
+            setRoundWinner(undefined)
+            return
+        }
+        const scoreResult = inferScoreLeader(blueScore, redScore)
         setRoundWinner(scoreResult)
     }, [blueScore, redScore])
 
@@ -57,7 +62,7 @@ function useScoreboard(courtId: string) {
             socket.emit("timer:isRunning:get", { courtId }, (v?: boolean) => {
                 if (v != null) setTimerRunning(v)
             })
-            socket.emit("rounds:get", { courtId }, (round?: any) => {
+            socket.emit("round:get", { courtId }, (round?: any) => {
                 if (!round) return
                 if (round.blueBreakdown) setBlueScore(round.blueBreakdown)
                 if (round.redBreakdown) setRedScore(round.redBreakdown)
@@ -73,7 +78,11 @@ function useScoreboard(courtId: string) {
             setRedScore(emptyBreakdown())
         })
         socket.on("round:winner:update", (d: { winner: Side }) =>
-            setRoundWinner(prev => ({ ...prev, winner: d.winner })))
+            setRoundWinner(prev => {
+                if (!prev) return
+                return ({ ...prev, leader: d.winner })
+            })
+        )
 
         // Fallback event cũ
         socket.on("score:updated", (d: { blue: any; red: any }) => {
@@ -176,20 +185,22 @@ function StatCell(props: {
 
 // ── Main ──────────────────────────────────────────────────────
 
-export default function TrackingBoard(props: { courtId?: string }) {
+export default function TrackingBoard() {
+    const searchParams = useSearchParams();
+
     const [mode, setMode] = useState<string>()
     const [interruptionMsg, setInterruptionMsg] = useState<WinCode>()
     const [config, setConfig] = useState<any>()
 
     useAutoHideCursor(2000)
-    const courtId = props.courtId ?? "1"
+    const courtId = searchParams.get("courtId") ?? "1"
     const s = useScoreboard(courtId)
 
-    const blueGj = s.blueScore.gamjeom + s.blueScore.eejeom
-    const redGj = s.redScore.gamjeom + s.redScore.eejeom
+    const blueGj = s.blueScore && (s.blueScore.eeljeom + s.blueScore.eejeom)
+    const redGj = s.redScore && (s.redScore.eeljeom + s.redScore.eejeom)
 
-    const blueLeads = s.roundWinner.winner === "blue"
-    const redLeads = s.roundWinner.winner === "red"
+    const blueLeads = s.roundWinner && s.roundWinner.leader === "blue"
+    const redLeads = s.roundWinner && s.roundWinner.leader === "red"
 
     const blueBg = "rgba(0,0,128,0.3)"
     const redBg = "rgba(128,0,0,0.3)"
@@ -227,13 +238,15 @@ export default function TrackingBoard(props: { courtId?: string }) {
     useScreenWakeLock()
 
     const applyPointGap =
+        s.roundWinner &&
         (!config ||
             (
                 config.pointGapEnabled
                 && (Math.abs(s.roundWinner.totalBlue - s.roundWinner.totalRed) >= config.pointGap)
             )
         )
-        && !s.timerRunning && interruptionMsg
+        && !s.timerRunning
+        && interruptionMsg
 
     return (
         <div className="w-screen h-screen bg-black grid overflow-hidden select-none"
@@ -282,20 +295,20 @@ export default function TrackingBoard(props: { courtId?: string }) {
                     gridArea: "l-name",
                     backgroundColor: blueBg,
                     fontSize: interruptionMsg ? "10vh" : "5vh",
-                    color: applyPointGap && s.roundWinner.winner === "blue" ? "#FFD700" : "white",
+                    color: applyPointGap && s.roundWinner?.leader === "blue" ? "#FFD700" : "white",
                 }}
             >
-                {applyPointGap && s.roundWinner.winner === "blue" && interruptionMsg}
+                {applyPointGap && s.roundWinner?.leader === "blue" && interruptionMsg}
             </div>
             <div className="font-score font-bold flex-center overflow-hidden"
                 style={{
                     gridArea: "r-name",
                     backgroundColor: redBg,
                     fontSize: interruptionMsg ? "10vh" : "5vh",
-                    color: applyPointGap && s.roundWinner.winner === "red" ? "#FFD700" : "white",
+                    color: applyPointGap && s.roundWinner?.leader === "red" ? "#FFD700" : "white",
                 }}
             >
-                {applyPointGap && s.roundWinner.winner === "red" && interruptionMsg}
+                {applyPointGap && s.roundWinner?.leader === "red" && interruptionMsg}
             </div>
 
             <div style={{ gridArea: "l", backgroundColor: blueBg }} />
@@ -313,9 +326,9 @@ export default function TrackingBoard(props: { courtId?: string }) {
                         ? "0 0 60px rgba(255,215,0,0.4)"
                         : "0 4px 20px rgba(0,0,0,0.6)",
                     transition: "color 0.3s, text-shadow 0.3s",
-                    border: applyPointGap && s.roundWinner.winner === "blue" ? "8px solid #FFD700" : undefined
+                    border: applyPointGap && s.roundWinner?.leader === "blue" ? "8px solid #FFD700" : undefined
                 }}>
-                {s.roundWinner.totalBlue}
+                {s.roundWinner?.totalBlue}
             </FitText>
 
             {/* ══ CỘT ĐỎ ══ */}
@@ -330,9 +343,9 @@ export default function TrackingBoard(props: { courtId?: string }) {
                         ? "0 0 60px rgba(255,215,0,0.4)"
                         : "0 4px 20px rgba(0,0,0,0.6)",
                     transition: "color 0.3s, text-shadow 0.3s",
-                    border: applyPointGap && s.roundWinner.winner === "red" ? "8px solid #FFD700" : undefined
+                    border: applyPointGap && s.roundWinner?.leader === "red" ? "8px solid #FFD700" : undefined
                 }}>
-                {s.roundWinner.totalRed}
+                {s.roundWinner?.totalRed}
             </FitText>
 
             {/* ══ CỘT GIỮA ══ */}
@@ -412,7 +425,7 @@ export default function TrackingBoard(props: { courtId?: string }) {
             {/* Blue stats */}
             <div className="flex-1 flex items-center justify-between px-[2vw]"
                 style={{ gridArea: "l-footer", background: "rgba(0,0,128,0.3)" }}>
-                <StatCell label="GAM-JEOM" value={blueGj} warn={blueGj >= 4} />
+                <StatCell label="GAM-JEOM" value={typeof blueGj === "number" ? blueGj : "-"} warn={(blueGj || 0) >= 4} />
                 <WinDots wins={s.blueWins} side="blue" />
             </div>
 
@@ -420,7 +433,7 @@ export default function TrackingBoard(props: { courtId?: string }) {
             <div className="flex-1 flex items-center justify-between px-[2vw]"
                 style={{ gridArea: "r-footer", background: redBg }}>
                 <WinDots wins={s.redWins} side="red" />
-                <StatCell label="GAM-JEOM" value={redGj} warn={redGj >= 4} />
+                <StatCell label="GAM-JEOM" value={typeof redGj === "number" ? redGj : "-"} warn={(redGj || 0) >= 4} />
             </div>
         </div>
     )

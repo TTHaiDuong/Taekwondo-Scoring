@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useEffect, useRef, useState } from "react"
 import { getSingletonSocket, setAuthToken } from "@/scripts/global-client-io"
-import { PointType, RoundResult, RoundWinner, ScoreBreakdown, Side, calcTotalFromBreakdown, emptyBreakdown, inferRoundWinner } from "@/scripts/match-types"
+import { PointType, Round, ScoreLeader, ScoreBreakdown, Side, calcTotalFromBreakdown, emptyBreakdown, inferScoreLeader } from "@/scripts/match-types"
 import MobileSetting, { createBinding } from "./MobileSetting"
 import QuickAccess from "./QuickAccess"
 
@@ -23,6 +23,8 @@ import { motion, AnimatePresence, useDragControls, useMotionValue, useAnimation,
 import usePageVisibility from "./UsePageVisibility"
 import { useIsDesktop } from "./UseIsDesktop"
 import FitText from "./FitText"
+import useScreenWakeLock from "./UseScreenWakeLock"
+import { useSearchParams } from "next/navigation"
 
 // ── Fullscreen hook ───────────────────────────────────────────
 function useFullscreen() {
@@ -523,7 +525,7 @@ function ClockPanel(props: {
     return (
         <button
             onClick={props.onToggle}
-            className="grid rounded-[10px] overflow-hidden select-none active:scale-95 transition-transform"
+            className="grid rounded-[10px] overflow-hidden select-none active:scale-95 transition-transform text-white"
             style={{
                 gridTemplateRows: "1fr 2.5fr 1fr",
                 border: `2px solid ${props.mode === "match" ? matchColor : borderColor}`,
@@ -718,8 +720,10 @@ export const useShortcut = (e: KeyboardEvent) => e.ctrlKey || e.shiftKey || e.al
 
 export default function MobileOperator() {
     // ── State ──────────────────────────────────────────────
-    const [courtId, setCourtId] = useState("1")
-    const [roundWinner, setRoundWinner] = useState<RoundWinner>({ totalBlue: 0, totalRed: 0, winner: null })
+    const searchParams = useSearchParams()
+
+    const [courtId, setCourtId] = useState(searchParams.get("courtId") ?? "1")
+    const [roundWinner, setRoundWinner] = useState<ScoreLeader>({ totalBlue: 0, totalRed: 0, leader: null })
     const [blueScore, setBlueScore] = useState<ScoreBreakdown>(emptyBreakdown())
     const [redScore, setRedScore] = useState<ScoreBreakdown>(emptyBreakdown())
 
@@ -747,6 +751,8 @@ export default function MobileOperator() {
 
     const isPageActive = usePageVisibility()
 
+    useScreenWakeLock()
+
     // Sử dụng để cuộn thẻ chứa các Point Editor xuống dưới cùng
     const containerRef = useRef<HTMLDivElement>(null)
     useEffect(() => {
@@ -764,7 +770,7 @@ export default function MobileOperator() {
     }, [])
 
     useEffect(() => {
-        const scoreResult = inferRoundWinner(blueScore, redScore)
+        const scoreResult = inferScoreLeader(blueScore, redScore)
         setRoundWinner(scoreResult)
 
         if (pointGapEnabled && Math.abs(scoreResult.totalBlue - scoreResult.totalRed) >= pointGap) {
@@ -784,17 +790,18 @@ export default function MobileOperator() {
         const onConnect = () => {
             socket.emit("court:join", { courtId })
 
-            socket.emit("rounds:get", { courtId }, (round?: RoundResult) => {
+            socket.emit("round:get", null, (round?: Round) => {
                 if (round) {
                     setBlueScore(round.blueBreakdown || emptyBreakdown())
                     setRedScore(round.redBreakdown || emptyBreakdown())
                     return
                 }
 
-                socket.emit("match:create", { courtId }, () => {
-                    socket.emit("match:currentRound:get", { courtId }, (currentRound?: any) => {
-                        socket.emit("rounds:create", { courtId, roundNo: 1 }, () => {
-                            socket.emit("rounds:switch", { courtId, currentRound: 1 })
+                socket.emit("match:create", null, () => {
+                    socket.emit("round:create", { roundNo: 1 }, () => {
+                        socket.emit("currentRound:switch", { currentRound: 1 }, () => {
+                            setBlueScore(emptyBreakdown())
+                            setRedScore(emptyBreakdown())
                         })
                     })
                 })
@@ -841,7 +848,7 @@ export default function MobileOperator() {
         }
 
         if (socket.connected) onConnect()
-        else socket.once("connect", onConnect)
+        else socket.on("connect", onConnect)
 
         socket.on("score:blue:update", (data: { breakdown: any }) => {
             setBlueScore(data.breakdown || emptyBreakdown())
@@ -1009,7 +1016,7 @@ export default function MobileOperator() {
                 courtId,
                 remainingMs: roundMs,
             }, () => {
-                socket.emit("score:operator:clear", { courtId })
+                socket.emit("currentRound:score:clear")
             })
         })
     }, [roundMs, courtId])
@@ -1049,7 +1056,7 @@ export default function MobileOperator() {
 
                     {ptgDialogVisible &&
                         <PtgNoticeDialog
-                            winner={roundWinner.winner || undefined}
+                            winner={roundWinner.leader || undefined}
                             onConfirm={() => setPtgDialogVisible(false)}
                             onDismiss={() => setPtgDialogVisible(false)}
                             totalBlue={roundWinner.totalBlue}
@@ -1187,7 +1194,7 @@ export default function MobileOperator() {
                             <ScorePanel
                                 side="blue"
                                 total={roundWinner.totalBlue}
-                                isLeading={roundWinner.winner === "blue"}
+                                isLeading={roundWinner.leader === "blue"}
                                 cameraOn={ivrState.blue.remaining > 0}
                                 onCameraClick={() => setIvrSide("BLUE")}
                             />
@@ -1213,7 +1220,7 @@ export default function MobileOperator() {
                             <ScorePanel
                                 side="red"
                                 total={roundWinner.totalRed}
-                                isLeading={roundWinner.winner === "red"}
+                                isLeading={roundWinner.leader === "red"}
                                 cameraOn={ivrState.red.remaining > 0}
                                 onCameraClick={() => setIvrSide("RED")}
                             />
@@ -1297,8 +1304,8 @@ export default function MobileOperator() {
                                 <div className="w-[25px]" />
                                 <span className="flex-1 text-center font-bold text-amber-300
                             font-variant-numeric tabular-nums"
-                                    style={{ fontSize: scoreSize, color: blueScore.gamjeom + blueScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
-                                    {blueScore.gamjeom + blueScore.eejeom}
+                                    style={{ fontSize: scoreSize, color: blueScore.eeljeom + blueScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
+                                    {blueScore.eeljeom + blueScore.eejeom}
                                 </span>
                                 <div className="w-[25px]" />
                             </div>
@@ -1310,8 +1317,8 @@ export default function MobileOperator() {
                                 <div className="w-[25px]" />
                                 <span className="flex-1 text-center font-bold text-amber-300
                             font-variant-numeric tabular-nums"
-                                    style={{ fontSize: scoreSize, color: redScore.gamjeom + redScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
-                                    {redScore.gamjeom + redScore.eejeom}
+                                    style={{ fontSize: scoreSize, color: redScore.eeljeom + redScore.eejeom >= 4 ? "rgba(255,56,59,85)" : undefined }}>
+                                    {redScore.eeljeom + redScore.eejeom}
                                 </span>
                                 <div className="w-[25px]" />
                             </div>
@@ -1319,17 +1326,17 @@ export default function MobileOperator() {
                             <GjRow
                                 label="1"
                                 side="BLUE"
-                                value={redScore.gamjeom}
-                                onPlus={() => emitScore("red", "gamjeom", "increase")}
-                                onMinus={() => emitScore("red", "gamjeom", "decrease")}
+                                value={redScore.eeljeom}
+                                onPlus={() => emitScore("red", "eeljeom", "increase")}
+                                onMinus={() => emitScore("red", "eeljeom", "decrease")}
                                 disabled={!canScore}
                             />
                             <GjRow
                                 label="1"
                                 side="RED"
-                                value={blueScore.gamjeom}
-                                onPlus={() => emitScore("blue", "gamjeom", "increase")}
-                                onMinus={() => emitScore("blue", "gamjeom", "decrease")}
+                                value={blueScore.eeljeom}
+                                onPlus={() => emitScore("blue", "eeljeom", "increase")}
+                                onMinus={() => emitScore("blue", "eeljeom", "decrease")}
                                 disabled={!canScore}
                             />
                             <GjRow

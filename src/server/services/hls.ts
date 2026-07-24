@@ -272,20 +272,20 @@ export function initHls(io: SocketIOServer, expressApp: any) {
     ensureDir(HLS_DIR)
     ensureDir(CLIPS_DIR)
 
-    expressApp.use("/api/hls", (req: any, res: any, next: any) => {
+    expressApp.use("/hls", (req: any, res: any, next: any) => {
         res.set("Access-Control-Allow-Origin", "*")
         if (req.path.endsWith(".m3u8")) {
             res.set("Cache-Control", "no-cache, no-store")
         }
         next()
     })
-    expressApp.use("/api/hls", express.static(HLS_DIR))
+    expressApp.use("/hls", express.static(HLS_DIR))
 
-    expressApp.use("/api/clips", (req: any, res: any, next: any) => {
+    expressApp.use("/clips", (req: any, res: any, next: any) => {
         res.set("Access-Control-Allow-Origin", "*")
         next()
     })
-    expressApp.use("/api/clips", express.static(CLIPS_DIR))
+    expressApp.use("/clips", express.static(CLIPS_DIR))
 
     // Namespace Socket.IO riêng nhận video+audio chunk từ camera.
     // LƯU Ý: đây chỉ là TÊN NAMESPACE, không phải HTTP path của engine.io.
@@ -378,7 +378,7 @@ export function initHls(io: SocketIOServer, expressApp: any) {
         })
     })
 
-    expressApp.get("/api/hls/cameras", (req: any, res: any) => {
+    expressApp.get("/hls/cameras", (req: any, res: any) => {
         const courtId = req.query.courtId as string | undefined
         const list = Array.from(sessions.values())
             .filter(s => !courtId || s.courtId === courtId)
@@ -399,7 +399,7 @@ export function initHls(io: SocketIOServer, expressApp: any) {
         res.json(list)
     })
 
-    expressApp.post("/api/hls/control", (req: any, res: any) => {
+    expressApp.post("/hls/control", (req: any, res: any) => {
         const { courtId, cameraId, action } = req.body
         const key = sessionKey(courtId, cameraId)
         const session = sessions.get(key)
@@ -442,7 +442,7 @@ export function initHls(io: SocketIOServer, expressApp: any) {
         res.json({ ok: true, paused: session.paused, zoom: session.zoom })
     })
 
-    expressApp.post("/api/hls/clip", (req: any, res: any) => {
+    expressApp.post("/hls/clip", (req: any, res: any) => {
         const { courtId, cameraId, startedAt, startSec, durationSec, rendition } = req.body
         const key = sessionKey(courtId, cameraId)
         const quality = rendition || "source"

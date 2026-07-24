@@ -1,5 +1,7 @@
+import { DefaultEventsMap, Server, Socket } from "socket.io"
 import { getRound } from "./match"
 import { addScoreEvent } from "./score"
+import { isPlainObject } from "@/utils/types"
 
 export type MatchTimer = {
     remainingMs: number
@@ -9,7 +11,7 @@ export type MatchTimer = {
     isRunning: boolean
 }
 
-export const TIMER_DB: Map<string, MatchTimer> = new Map()
+export const TIMERS: Map<string, MatchTimer> = new Map()
 
 export type TimerEvent = {
     timestamp: number      // epoch ms — ĐÚNG thời điểm trạng thái đổi
@@ -38,37 +40,43 @@ function pushTimerEvent(courtId: string, remainingMs: number, isRunning: boolean
 // MỚI: đẩy một MỐC RESET — không phải TimerEvent thật, chỉ đánh dấu ranh
 // giới "đồng hồ vừa bị khởi tạo lại, chưa từng chạy kể từ đây".
 export function pushTimerReset(courtId: string) {
-    const list = TIMER_HISTORY.get(courtId) ?? []
-    list.push({ timestamp: Date.now(), event: null })
-    TIMER_HISTORY.set(courtId, list)
+    const timeEvent = { timestamp: Date.now(), event: null }
+    let list = TIMER_HISTORY.get(courtId)
+    if (!list) {
+        list = []
+        TIMER_HISTORY.set(courtId, list)
+    }
+    list.push(timeEvent)
+    return timeEvent
 }
 
 export function initTimer(io: any,
-    data: { courtId: string, roundMs: number }
+    courtId: string,
+    roundMs: number
 ) {
-    const timer = TIMER_DB.get(data.courtId)
-    if (timer) stopTimer(io, data.courtId, timer)
+    const timer = TIMERS.get(courtId)
+    if (timer) stopTimer(io, courtId, timer)
 
-    const newTimer = TIMER_DB.set(data.courtId, {
-        remainingMs: data.roundMs,
-        roundMs: data.roundMs,
+    const newTimer = TIMERS.set(courtId, {
+        remainingMs: roundMs,
+        roundMs: roundMs,
         isRunning: false
     })
 
-    pushTimerReset(data.courtId)
-    io.to(`court-${data.courtId}`).emit("timer:event:add", TIMER_HISTORY.get(data.courtId)!.at(-1))
+    pushTimerReset(courtId)
+    io.to(`court-${courtId}`).emit("timer:event:add", TIMER_HISTORY.get(courtId)!.at(-1))
 
-    io.to(`court-${data.courtId}`).emit("timer:remainingMs:update", {
-        remainingMs: data.roundMs,
+    io.to(`court-${courtId}`).emit("timer:remainingMs:update", {
+        remainingMs: roundMs,
     })
-    io.to(`court-${data.courtId}`).emit("timer:roundMs:update", {
-        roundMs: data.roundMs,
+    io.to(`court-${courtId}`).emit("timer:roundMs:update", {
+        roundMs: roundMs,
     })
     return newTimer
 }
 
 function runTimer(io: any, courtId: string): boolean {
-    const timer = TIMER_DB.get(courtId)
+    const timer = TIMERS.get(courtId)
     if (!timer || timer.interval || timer.remainingMs <= 0) return false
 
     timer.startAt = Date.now()
@@ -129,7 +137,7 @@ function stopTimer(io: any, courtId: string, timer: MatchTimer) {
 }
 
 function setRemaining(io: any, courtId: string, remainingMs: number): boolean {
-    const timer = TIMER_DB.get(courtId)
+    const timer = TIMERS.get(courtId)
     if (!timer || timer.isRunning || timer.interval) return false
 
     timer.startAt = undefined
@@ -156,8 +164,8 @@ function setRemaining(io: any, courtId: string, remainingMs: number): boolean {
 }
 
 export function getRemainingMs(courtId: string): number | undefined {
-    const timer = TIMER_DB.get(courtId)
-    if (!timer) return undefined
+    const timer = TIMERS.get(courtId)
+    if (!timer) return
 
     if (!timer.isRunning || !timer.startAt) {
         return timer.remainingMs
@@ -169,62 +177,89 @@ export function getRemainingMs(courtId: string): number | undefined {
     )
 }
 
-export default function initTimerChannel(io: any, socket: any) {
-    socket.on(
-        "timer:create",
-        (
-            data: { courtId: string, roundMs: number },
-            // callback: (respone: any) => void,
-        ) => {
-            // console.log(data)
-            // if (data) console.log("[timer:create] The existence of the courtId: " + TIMER_DB.has(data.courtId))
-            if (TIMER_DB.has(data.courtId)) return
-            initTimer(io, data)
-        })
+export default function initTimerChannel(
+    io: Server<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, any>,
+    socket: Socket<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, any>
+) {
+    socket.on("timer:create", (
+        data: { roundMs: number },
+        // callback: (respone: any) => void,
+    ) => {
+        if (!isPlainObject(data)) return
+        if (typeof data.roundMs !== "number") return
 
-    socket.on("timer:stop", (data: { courtId: string }, callback: (remainingMs?: number) => void) => {
-        // if (data) console.log("[timer:stop] The existence of the courtId: " + TIMER_DB.has(data.courtId))
-        const timer = TIMER_DB.get(data.courtId)
-        if (!timer) return callback?.(undefined)
+        const courtId = socket.data.courtId
 
-        stopTimer(io, data.courtId, timer)
-        callback?.(timer.remainingMs)
+        if (TIMERS.has(courtId)) return
+        initTimer(io, courtId, data.roundMs)
     })
 
-    socket.on("timer:run", (data: { courtId: string }) => {
-        // if (data) console.log("[timer:run] The existence of the courtId: " + TIMER_DB.has(data.courtId))
-        runTimer(io, data.courtId)
+    socket.on("timer:stop", (_, callback?: (remainingMs?: number) => void) => {
+        const courtId = socket.data.courtId
+
+        const timer = TIMERS.get(courtId)
+        if (!timer) return typeof callback === "function"
+            && callback(undefined)
+
+        stopTimer(io, courtId, timer)
+        if (typeof callback === "function")
+            callback(timer.remainingMs)
     })
 
-    socket.on("timer:remainingMs:get", (data: { courtId: string }, callback: (remainingMs?: number) => void) => {
-        const t = TIMER_DB.get(data.courtId)
-        if (!t) return callback()
-        callback(t.remainingMs)
+    socket.on("timer:run", () => {
+        const courtId = socket.data.courtId
+
+        runTimer(io, courtId)
     })
 
-    socket.on("timer:isRunning:get", (data: { courtId: string }, callback: (isRunning?: boolean) => void) => {
-        const t = TIMER_DB.get(data.courtId)
-        if (!t) return callback()
-        callback(t.isRunning)
+    socket.on("timer:remainingMs:get", (_, callback?: (remainingMs?: number) => void) => {
+        const courtId = socket.data.courtId
+
+        const t = TIMERS.get(courtId)
+        if (!t) return typeof callback === "function"
+            && callback()
+
+        if (typeof callback === "function")
+            callback(t.remainingMs)
     })
 
-    socket.on("timer:remainingMs:update", (data: { courtId: string, remainingMs: number }, callback?: () => void) => {
-        setRemaining(io, data.courtId, data.remainingMs)
-        callback?.()
+    socket.on("timer:isRunning:get", (_, callback?: (isRunning?: boolean) => void) => {
+        const courtId = socket.data.courtId
+
+        const t = TIMERS.get(courtId)
+        if (!t) return typeof callback === "function"
+            && callback()
+
+        if (typeof callback === "function")
+            callback(t.isRunning)
     })
 
-    socket.on("timer:roundMs:update", (data: { courtId: string, roundMs: number }) => {
-        const t = TIMER_DB.get(data.courtId)
+    socket.on("timer:remainingMs:update", (data: { remainingMs: number }, callback?: () => void) => {
+        const courtId = socket.data.courtId
+
+        setRemaining(io, courtId, data.remainingMs)
+
+        if (typeof callback === "function")
+            callback()
+    })
+
+    socket.on("timer:roundMs:update", (data: { roundMs: number }) => {
+        const courtId = socket.data.courtId
+
+        const t = TIMERS.get(courtId)
         if (!t) return
         t.roundMs = data.roundMs
 
-        socket.to(`court-${data.courtId}`).emit("timer:roundMs:update", {
+        socket.to(`court-${courtId}`).emit("timer:roundMs:update", {
             roundMs: t.roundMs,
         })
     })
 
-    socket.on("timer:events:get", (data: { courtId: string }, callback: (entries?: TimerHistoryEntry[]) => void) => {
-        callback(TIMER_HISTORY.get(data.courtId))
+    socket.on("timer:events:get", (_, callback?: (entries?: TimerHistoryEntry[]) => void) => {
+        const courtId = socket.data.courtId
+
+        if (typeof callback === "function")
+            callback(TIMER_HISTORY.get(courtId))
     })
 }
 

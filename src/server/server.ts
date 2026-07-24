@@ -1,4 +1,4 @@
-import express from 'express'
+import express, { Router } from 'express'
 import https from 'https'
 import http from 'http'
 import fs from 'fs'
@@ -80,7 +80,12 @@ const io = new Server(server, {
 initAuthMiddleWare(io)
 
 // initHls tự tạo namespace "/camera" trên io, đồng thời đăng ký route Express
-initHls(io, app)
+const apiRouter = Router()
+apiRouter.get("/serverip", (req, res) => {
+    res.json(getWifiIP())
+})
+app.use("/api", apiRouter)
+initHls(io, apiRouter)
 
 app.use("/", (req, res) =>
     res.json({
@@ -89,7 +94,7 @@ app.use("/", (req, res) =>
 )
 
 io.on("connection", (socket) => {
-    handleVir(io, socket)
+    // handleVir(io, socket)
     initMatchChannel(io, socket)
     initScoreChannel(io, socket)
     initTestModeChannel(io, socket)

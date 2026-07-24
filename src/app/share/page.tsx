@@ -52,7 +52,7 @@ export default function SharePage() {
         if (typeof window === "undefined" || !ip) return null
         const port = window.location.port
         return {
-            operator: `http://${ip}:${port}/operator?courtId=${courtId}`,
+            operator: `https://${ip}/operator?courtId=${courtId}`,
             judge: `http://${ip}:${port}/judge?courtId=${courtId}`,
             tracking: `https://${ip}/tracking?courtId=${courtId}`,
             camera: `https://${ip}/camera?courtId=${courtId}&cameraId=main`,
@@ -75,7 +75,12 @@ export default function SharePage() {
     const activeGroup = GROUPS.find(g => g.id === active)!
 
     useEffect(() => {
+        function isTypingTarget(el: EventTarget | null) {
+            if (!(el instanceof HTMLElement)) return false
+            return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable
+        }
         function handleKeyDown(e: KeyboardEvent) {
+            if (isTypingTarget(e.target)) return
             if (useShortcut(e)) return
 
             switch (e.key) {

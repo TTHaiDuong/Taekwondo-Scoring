@@ -1,7 +1,7 @@
 "use client"
 
 import { useRef, useState } from "react"
-import { MatchInfo, Side, WinCode, WIN_CODES, inferMatchWinner, countRoundWins } from "../scripts/match-types"
+import { MatchInfo, Side, WinCode, WIN_CODES_DESCRIPTION, inferMatchWinner, countRoundWins } from "../scripts/match-types"
 import Selector from "@/components/Selector"
 import PopupOverlay from "@/components/PopupOverlay"
 
@@ -108,13 +108,13 @@ export default function DeclareWinner(props: {
             <div className="flex gap-[10px]">
                 <WinnerCard
                     side="blue"
-                    name={match.blue.name}
+                    name={match.blueInfo.name}
                     isSelected={selectedWinner === "blue"}
                     onClick={() => pushState !== "pushing" && setSelectedWinner("blue")}
                 />
                 <WinnerCard
                     side="red"
-                    name={match.red.name}
+                    name={match.redInfo.name}
                     isSelected={selectedWinner === "red"}
                     onClick={() => pushState !== "pushing" && setSelectedWinner("red")}
                 />
@@ -133,7 +133,7 @@ export default function DeclareWinner(props: {
                         {selectedCode}
                     </span>
                     <span className="text-[10px] text-white/30">
-                        {WIN_CODES.find(w => w.key === selectedCode)?.description}
+                        {WIN_CODES_DESCRIPTION.find(w => w.key === selectedCode)?.description}
                     </span>
                     {!isDone && <span className="text-[10px] text-white/40">▼</span>}
                 </div>
@@ -148,7 +148,7 @@ export default function DeclareWinner(props: {
                             <span className="text-[12px] text-amber-300">
                                 Xác nhận công bố{" "}
                                 <span className={selectedWinner === "blue" ? "text-blue-300 font-bold" : "text-red-300 font-bold"}>
-                                    {selectedWinner === "blue" ? match.blue.name : match.red.name}
+                                    {selectedWinner === "blue" ? match.blueInfo.name : match.redInfo.name}
                                 </span>
                                 {" "}thắng với mã{" "}
                                 <span className="font-mono font-bold">{selectedCode}</span>?
@@ -219,7 +219,7 @@ export default function DeclareWinner(props: {
             <PopupOverlay ref={winCodeRef} className="flex flex-col justify-end">
                 <Selector
                     title="Chọn mã kết quả trận đấu"
-                    data={WIN_CODES.map(w => ({ key: w.key, description: w.description }))}
+                    data={WIN_CODES_DESCRIPTION.map(w => ({ key: w.key, description: w.description }))}
                     value={selectedCode}
                     onValueChanged={(v) => {
                         setSelectedCode(v as WinCode)

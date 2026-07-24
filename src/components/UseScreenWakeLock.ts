@@ -4,24 +4,23 @@ import { useEffect } from "react"
  * Chống tự động tắt màn hình khi không có tương tác của người dùng.
  * @note Chỉ sử dụng được với `https://`
  * @example
- * ```
  * function Component() {
  *      useScreenWakeLock()
  *      // ...
  * }
- * ```
  */
 export default function useScreenWakeLock() {
     useEffect(() => {
         let wakeLock: WakeLockSentinel | null = null
 
         async function requestWakeLock() {
-            if (!("wakeLock" in navigator)) return
+            if (!("wakeLock" in navigator))
+                return console.log("[useScreenWakeLock] Trình duyệt/thiết bị không hỗ trợ Wake Lock API.")
 
             try {
                 wakeLock = await navigator.wakeLock.request("screen")
             } catch (e) {
-                console.error("[useScreenWakeLock]", (e as Error).name, (e as Error).message)
+                console.log("[useScreenWakeLock]", (e as Error).name, (e as Error).message)
             }
         }
 

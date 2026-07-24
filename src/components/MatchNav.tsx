@@ -248,24 +248,24 @@ function EditPanel(props: {
             {/* VĐV Xanh */}
             <AthleteEditBlock
                 side="blue"
-                info={draft.blue}
+                info={draft.blueInfo}
                 wins={props.wins.blue}
-                onChange={patch => setDraft(d => ({ ...d, blue: { ...d.blue, ...patch } }))}
+                onChange={patch => setDraft(d => ({ ...d, blueInfo: { ...d.blueInfo, ...patch } }))}
             />
 
             {/* VĐV Đỏ */}
             <AthleteEditBlock
                 side="red"
-                info={draft.red}
+                info={draft.redInfo}
                 wins={props.wins.red}
-                onChange={patch => setDraft(d => ({ ...d, red: { ...d.red, ...patch } }))}
+                onChange={patch => setDraft(d => ({ ...d, redInfo: { ...d.redInfo, ...patch } }))}
             />
 
             {/* Buttons */}
             <div className="flex flex-col gap-[8px]">
                 <button
                     onClick={() => props.onSave(draft)}
-                    disabled={!draft.blue?.name.trim() || !draft.red?.name.trim()}
+                    disabled={!draft.blueInfo?.name.trim() || !draft.redInfo?.name.trim()}
                     className="w-full py-[12px] rounded-[12px] text-[14px] font-semibold
                         bg-white text-black active:scale-[0.97] transition-transform
                         disabled:opacity-30 disabled:cursor-not-allowed"
@@ -307,9 +307,9 @@ function MatchListItem(props: {
             </span>
             <div className="flex-1 min-w-0 flex flex-col gap-[1px]">
                 <div className="flex items-center gap-[6px] min-w-0">
-                    <span className="text-[13px] text-blue-300 truncate flex-1">{match.blue.name}</span>
+                    <span className="text-[13px] text-blue-300 truncate flex-1">{match.blueInfo.name}</span>
                     <span className="text-[11px] text-white/30 shrink-0">vs</span>
-                    <span className="text-[13px] text-red-300 truncate flex-1 text-right">{match.red.name}</span>
+                    <span className="text-[13px] text-red-300 truncate flex-1 text-right">{match.redInfo.name}</span>
                 </div>
                 <span className="text-[11px] text-white/40">
                     {MATCH_CATEGORY_LABEL[match.category]} · {match.weightClass}
@@ -335,10 +335,10 @@ function MatchSearchPanel(props: {
         const q = query.toLowerCase()
         return (
             m.matchNo.toString().includes(q) ||
-            m.blue.name.toLowerCase().includes(q) ||
-            m.red.name.toLowerCase().includes(q) ||
-            (m.blue.team?.toLowerCase().includes(q) ?? false) ||
-            (m.red.team?.toLowerCase().includes(q) ?? false) ||
+            m.blueInfo.name.toLowerCase().includes(q) ||
+            m.redInfo.name.toLowerCase().includes(q) ||
+            (m.blueInfo.team?.toLowerCase().includes(q) ?? false) ||
+            (m.redInfo.team?.toLowerCase().includes(q) ?? false) ||
             m.weightClass.toLowerCase().includes(q)
         )
     })
@@ -525,10 +525,10 @@ export default function MatchNav(props: {
 
             {/* VĐV */}
             <div className="flex flex-col gap-[8px]">
-                <AthleteRow side="blue" name={match.blue.name}
-                    team={match.blue.team} roundWins={wins.blue} />
-                <AthleteRow side="red" name={match.red.name}
-                    team={match.red.team} roundWins={wins.red} />
+                <AthleteRow side="blue" name={match.blueInfo.name}
+                    team={match.blueInfo.team} roundWins={wins.blue} />
+                <AthleteRow side="red" name={match.redInfo.name}
+                    team={match.redInfo.team} roundWins={wins.red} />
             </div>
         </div>
     )

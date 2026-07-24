@@ -25,3 +25,9 @@ export type Vector2 = {
     x: number,
     y: number
 }
+
+export function isPlainObject(value: any) {
+    return value !== null
+        && typeof value === "object"
+        && !Array.isArray(value)
+}

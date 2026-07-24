@@ -892,7 +892,7 @@ function HitIconBadge({ type, size }: { type: PointType; size: number }) {
                     </span>
                 </div>
             )
-        case "gamjeom":
+        case "eeljeom":
             return (
                 <div className="flex items-center justify-center text-white font-black rounded-[2px] leading-none"
                     style={{ width: size * 0.7, height: size, fontSize: size * 0.65 }}>
@@ -1125,7 +1125,7 @@ function ScoreOverlayContent(props: {
                 variants={groupVariants}
             >
                 <motion.div
-                    className="relative flex flex-col items-center justify-center shrink-0 gap-[3px]"
+                    className="relative flex flex-col items-center justify-around shrink-0 gap-[3px]"
                     style={{
                         width: clockWidth,
                         backgroundColor: SCORE_COLORS.bgClock,

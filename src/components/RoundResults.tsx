@@ -2,10 +2,10 @@
 
 import { useRef, useState, useCallback, useContext } from "react"
 import {
-    MatchInfo, RoundResult, Side, WinCode, WIN_CODES,
+    MatchInfo, Round, Side, WinCode, WIN_CODES_DESCRIPTION,
     ScoreBreakdown, emptyBreakdown, calcTotalFromBreakdown,
     countRoundWins, inferMatchWinner,
-    RoundWinner,
+    ScoreLeader,
 } from "@/scripts/match-types"
 import Selector from "@/components/Selector"
 import PopupOverlay from "@/components/PopupOverlay"
@@ -129,8 +129,8 @@ function BreakdownStepper(props: {
 
 function BreakdownPanel(props: {
     roundLabel: string
-    result: RoundResult
-    onUpdate: (patch: Partial<RoundResult>) => void
+    result: Round
+    onUpdate: (patch: Partial<Round>) => void
 }) {
     const r = props.result
     const blueB = r.blueBreakdown ?? emptyBreakdown()
@@ -228,12 +228,12 @@ function BreakdownPanel(props: {
 
 function RoundRow(props: {
     roundNo: 1 | 2 | 3 | "golden"
-    result?: RoundResult
+    result?: Round
     isCurrent: boolean
     onWinnerChange: (side: Side) => void
     onWinnerClear: () => void
     onWinCodeChange: (code: WinCode) => void
-    onRoundUpdate: (patch: Partial<RoundResult>) => void
+    onRoundUpdate: (patch: Partial<Round>) => void
     onResetRound?: () => void
     onClearRound?: () => void
 }) {
@@ -371,7 +371,7 @@ function RoundRow(props: {
             <PopupOverlay ref={winCodeRef} className="flex flex-col justify-end">
                 <Selector
                     title={`Win Code — Hiệp ${label}`}
-                    data={WIN_CODES.map(w => ({ key: w.key, description: w.description }))}
+                    data={WIN_CODES_DESCRIPTION.map(w => ({ key: w.key, description: w.description }))}
                     value={r?.winCode}
                     onValueChanged={(v) => {
                         props.onWinCodeChange(v as WinCode)
@@ -439,7 +439,7 @@ function ResetMatchButton(props: { onReset: () => void }) {
 export default function RoundResults(props: {
     match: MatchInfo
     currentRound: 1 | 2 | 3 | "golden"
-    onRoundUpdate: (roundNo: 1 | 2 | 3 | "golden", patch: Partial<RoundResult>) => void
+    onRoundUpdate: (roundNo: 1 | 2 | 3 | "golden", patch: Partial<Round>) => void
     onResetRound?: (roundNo: 1 | 2 | 3 | "golden") => void
     onClearRound?: (roundNo: 1 | 2 | 3 | "golden") => void
     onResetMatch?: () => void

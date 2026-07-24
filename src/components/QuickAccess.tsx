@@ -3,7 +3,7 @@
 import { useContext, useEffect, useState } from "react"
 import { useSheet } from "./useSheet"
 import {
-    MatchInfo, RoundResult, Side, WinCode,
+    MatchInfo, Round, Side, WinCode,
     createEmptyRound, DEFAULT_MATCH_CONFIG, emptyBreakdown
 } from "@/scripts/match-types"
 import { MOCK_MATCHES } from "@/scripts/mock-data"
@@ -70,7 +70,7 @@ export default function QuickAccess(props: {
         ))
     }
 
-    function patchRound(roundNo: 1 | 2 | 3 | "golden", patch: Partial<RoundResult>) {
+    function patchRound(roundNo: 1 | 2 | 3 | "golden", patch: Partial<Round>) {
         // const existing = match.rounds?.get(roundNo) ?? createEmptyRound()
         const existing = createEmptyRound()
         patchMatch({
@@ -90,8 +90,8 @@ export default function QuickAccess(props: {
             category: "other",
             weightClass: "",
             gender: "male",
-            blue: { name: "" },
-            red: { name: "" },
+            blueInfo: { name: "" },
+            redInfo: { name: "" },
             config: match.config,
             status: "upcoming",
             rounds: new Map(),

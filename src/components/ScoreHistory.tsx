@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { ScoreEvent, RoundResult, POINT_MAP, Side, PointType } from "../scripts/match-types"
+import { ScoreEvent, Round, POINT_MAP, Side, PointType } from "../scripts/match-types"
 import { getSingletonSocket } from "@/scripts/global-client-io"
 import { JudgePointType, ScoreHistoryEntry } from "@/server/services/score"
 
@@ -36,8 +36,8 @@ function EventItem(props: {
     const isSet = event.action === "set"
 
     // Nguồn ghi điểm: operator (bàn điều khiển) hay judge (giám khảo bấm)
-    const isJudgeScored = event.scoreChangeBy === "judge"
-    const activeJudges = event.judgeNumber?.filter((j): j is number => j !== undefined) ?? []
+    const isJudgeScored = event.scoreChangedBy === "judge"
+    const activeJudges = event.voters?.filter((j): j is number => j !== undefined) ?? []
 
     return (
         <div className={`flex items-center gap-[10px] py-[8px] px-[4px]
@@ -156,7 +156,7 @@ export default function ScoreHistory(props: {
                     && e.pointType === data.pointType
                     && e.side === data.side
                 ) {
-                    e.judgeNumber = data.votersOrder
+                    e.voters = data.votersOrder
                 }
             })
             setEvents([...events])

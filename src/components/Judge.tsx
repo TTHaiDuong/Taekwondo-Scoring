@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { io, Socket } from "socket.io-client"
 import { getSingletonSocket, setAuthToken } from "@/scripts/global-client-io"
+import { useSearchParams } from "next/navigation"
 
 
 // ============================================================
@@ -363,8 +364,10 @@ function SideLayout(props: {
 
 // ── Main ──────────────────────────────────────────────────────
 
-export default function Judge(props: { courtId?: string }) {
-    const courtId = props.courtId ?? "1"
+export default function Judge() {
+    const searchParams = useSearchParams();
+
+    const courtId = searchParams.get("courtId") ?? "1"
     const env = useEnvironment()
 
     const socketRef = useRef<Socket | null>(null)
@@ -522,6 +525,8 @@ export default function Judge(props: { courtId?: string }) {
                     flex-center px-[1rem] py-[1vw] rounded-full
                     bg-white/10 border border-white/15">
                     <span className="text-[1rem] font-bold text-white/70 tracking-wide">
+                        SÂN {courtId}
+                        <br />
                         No. {judgeOrder + 1}
                     </span>
                 </div>

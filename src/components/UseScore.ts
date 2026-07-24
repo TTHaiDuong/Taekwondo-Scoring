@@ -2,8 +2,8 @@ import { useState, useEffect } from "react"
 import { getSingletonSocket } from "@/scripts/global-client-io"
 import {
     emptyBreakdown,
-    inferRoundWinner,
-    RoundWinner,
+    inferScoreLeader,
+    ScoreLeader,
     ScoreBreakdown,
 } from "@/scripts/match-types"
 
@@ -11,12 +11,12 @@ import {
  * @todo Trong tương lai cần xoá tham số courtId, server sẽ gắn courtId cho đối tượng client.
  */
 export default function useScore(courtId: string) {
-    const [roundResult, setRoundResult] = useState<RoundWinner>({ totalBlue: 0, totalRed: 0, winner: null })
+    const [roundResult, setRoundResult] = useState<ScoreLeader>({ totalBlue: 0, totalRed: 0, leader: null })
     const [blueBreakdown, setBlueBreakdown] = useState<ScoreBreakdown>(emptyBreakdown())
     const [redBreakdown, setRedBreakdown] = useState<ScoreBreakdown>(emptyBreakdown())
 
     useEffect(() => {
-        const scoreResult = inferRoundWinner(blueBreakdown, redBreakdown)
+        const scoreResult = inferScoreLeader(blueBreakdown, redBreakdown)
         setRoundResult(scoreResult)
     }, [blueBreakdown, redBreakdown])
 

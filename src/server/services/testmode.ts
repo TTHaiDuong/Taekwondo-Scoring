@@ -1,12 +1,12 @@
 import { MatchTimer } from "./timer.js"
 import { getRound } from "./match.js"
 import {
-    RoundResult,
+    Round,
     createEmptyRound,
 } from "../../scripts/match-types.js"
 
 
-export const TEST_ROOMS: Map<string, RoundResult> = new Map()
+export const TEST_ROOMS: Map<string, Round> = new Map()
 
 export const TEST_TIMER_DB: Map<string, MatchTimer> = new Map()
 

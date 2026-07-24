@@ -1,59 +1,24 @@
 // import { sendScoreToClient } from "./score.js"
+import { OrderedUniqueList } from "@/utils/collections.js";
 import {
     SIDE,
     Side,
-    RoundResult,
+    Round,
     createEmptyRound,
     MatchInfo,
     calcTotalFromBreakdown,
     DEFAULT_MATCH_CONFIG,
     RoundNo,
     WinCode,
-    MatchConfig
+    MatchConfig,
+    WIN_CODES_DESCRIPTION,
+    WIN_CODES
 } from "../../scripts/match-types.js"
 import { getWifiIP } from "./get-ip.js"
 import { TEST_ROOMS } from "./testmode.js";
+import { DefaultEventsMap, Server, Socket } from "socket.io";
+import { isPlainObject } from "@/utils/types.js";
 
-
-class OrderedUniqueList<T> {
-    private items: T[] = []
-    private indices = new Map<T, number>()
-
-    add(item: T) {
-        if (this.indices.has(item)) return
-
-        this.indices.set(item, this.items.length)
-        this.items.push(item)
-    }
-
-    get size() {
-        return this.items.length
-    }
-
-    has(item: T) {
-        return this.indices.has(item)
-    }
-
-    indexOf(item: T) {
-        return this.indices.get(item) ?? -1
-    }
-
-    remove(item: T) {
-        const idx = this.indices.get(item)
-        if (idx === undefined) return
-
-        this.items.splice(idx, 1)
-        this.indices.delete(item)
-
-        for (let i = idx; i < this.items.length; i++) {
-            this.indices.set(this.items[i], i)
-        }
-    }
-
-    values() {
-        return this.items
-    }
-}
 
 /** Dùng để lưu thông tin các id socket của các giám định
  * để hiển thị ai đã bấm điểm.
@@ -71,23 +36,16 @@ export function getJudgeOrder(courtId: string, judgeId: string): number | undefi
     return order
 }
 
-export const MATCH_DB: Map<string, MatchInfo> = new Map()
-export const MATCH_CONFIG: Map<string, any> = new Map()
+export const MATCHS: Map<string, MatchInfo> = new Map()
+export const MATCHS_CONFIG: Map<string, any> = new Map()
 
-export function getRound(courtId: string): RoundResult | undefined {
-    const match = MATCH_DB.get(courtId)
+export function getRound(courtId: string): Round | undefined {
+    const match = MATCHS.get(courtId)
     if (!match) return
     const currentRound = match.currentRound
     if (!currentRound) return
 
     return match.rounds.get(currentRound)
-}
-
-export function sendRoundNoToClient(io: any, courtId: string, roundNo: RoundNo) {
-    io.to(`court-${courtId}`).emit("match:roundNo:update", {
-        courtId: courtId,
-        roundNo: roundNo
-    })
 }
 
 function broadcastJudgeOrders(io: any, courtId: string) {
@@ -103,12 +61,17 @@ function broadcastJudgeOrders(io: any, courtId: string) {
 }
 
 
-export default function initMatchChannel(io: any, socket: any) {
-    socket.on("court:join", (data: { courtId: string, isJudge?: boolean }, callback: () => void) => {
+export default function initMatchChannel(
+    io: Server<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, any>,
+    socket: Socket<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, any>
+) {
+    socket.on("court:join", (data: { courtId: string, isJudge?: boolean }, callback?: () => void) => {
         socket.data.courtId = data.courtId
 
-        if (!data.isJudge)
-            return socket.join(`court-${data.courtId}`)
+        if (!data.isJudge) {
+            socket.join(`court-${data.courtId}`)
+            return typeof callback === "function" && callback()
+        }
 
         let judgesInfo = JUDGES_INFO.get(data.courtId)
 
@@ -118,64 +81,60 @@ export default function initMatchChannel(io: any, socket: any) {
         }
 
         judgesInfo.add(socket.id)
-        callback?.()
         broadcastJudgeOrders(io, data.courtId)
+        if (typeof callback === "function") callback()
     })
 
-    socket.on("judge:order:get", (data: { courtId: string }, callback: (num?: number) => void) => {
-        const judgeOrder = getJudgeOrder(data.courtId, socket.id)
-        callback(judgeOrder)
+    socket.on("judge:order:get", (_, callback?: (num?: number) => void) => {
+        const courtId = socket.data.courtId
+        const judgeOrder = getJudgeOrder(courtId, socket.id)
+        if (typeof callback === "function")
+            callback(judgeOrder)
     })
 
-    socket.on("match:create", (data: { courtId: string }, callback: () => void) => {
-        // const user = socket.user
-        // if (!user || !user.courtId || user.role !== "operator") return
+    socket.on("match:create", (_, callback?: (data: { message: "created" | "existed" }) => void) => {
+        const courtId = socket.data.courtId
 
-        // Không tạo lại nếu đã có — chỉ gửi trạng thái hiện tại về client
-        if (MATCH_DB.has(data.courtId)) {
-            // const existing = MATCH_DB.get(data.courtId)
-            // sendScoreToClient(io, user.courtId, existing.rounds[1])
-            // sendRoundNoToClient(io, user.courtId, 1)
-            return
-        }
+        if (MATCHS.has(courtId))
+            return typeof callback === "function"
+                && callback({ message: "existed" })
 
         const match: MatchInfo = {
-            matchId: "",
-            matchNo: undefined,
-            category: undefined,
-            weightClass: undefined,
-            gender: undefined,
-            blue: undefined,
-            red: undefined,
-            config: DEFAULT_MATCH_CONFIG,
-            status: undefined,
+            config: { ...DEFAULT_MATCH_CONFIG },
+            status: "upcoming",
             rounds: new Map(),
-        };
+        }
+        MATCHS.set(courtId, match)
 
-        MATCH_DB.set(data.courtId, match)
-
-        callback()
-
-        // sendScoreToClient(io, user.courtId, match.rounds.get(1)!)
-        // sendRoundNoToClient(io, user.courtId, 1)
+        if (typeof callback === "function")
+            callback({ message: "created" })
     })
 
-    socket.on("match:currentRound:get", (data: { courtId: string }, callback: (currentRound?: RoundNo) => void) => {
-        const match = MATCH_DB.get(data.courtId)
-        callback(match?.currentRound)
+    socket.on("currentRoundNo:get", (_, callback?: (currentRound?: RoundNo) => void) => {
+        const courtId = socket.data.courtId
+
+        const match = MATCHS.get(courtId)
+        if (typeof callback === "function")
+            callback(match?.currentRound)
     })
 
-    socket.on("rounds:create", (data: { courtId: string, roundNo: RoundNo }, callback: () => void) => {
-        // const user = socket.user
-        // if (!user || !user.courtId || user.role !== "operator") return
+    socket.on("round:create", (
+        data: { roundNo: RoundNo },
+        callback?: (data: { message: "created" | "the match does not exist" }) => void
+    ) => {
+        if (!isPlainObject(data)) return
+        if (typeof data.roundNo !== "number") return
 
-        const match = MATCH_DB.get(data.courtId)
-        if (!match) return
+        const courtId = socket.data.courtId
 
-        const newRound = createEmptyRound()
+        const match = MATCHS.get(courtId)
+        if (!match) return typeof callback === "function"
+            && callback({ message: "the match does not exist" })
+
+        const newRound = createEmptyRound(data.roundNo)
         match.rounds.set(data.roundNo, newRound)
-        // sendScoreToClient(io, user.courtId, newRound)
-        callback()
+        if (typeof callback === "function")
+            callback({ message: "created" })
     })
 
     // socket.on("match:rounds:delete", (data: { roundIdx: number }, ack: any) => {
@@ -199,13 +158,12 @@ export default function initMatchChannel(io: any, socket: any) {
     //     }
     // })
 
-    socket.on("rounds:get", (data: { courtId: string }, callback: (round?: RoundResult) => void) => {
-        const round = TEST_ROOMS.get(data.courtId) || getRound(data.courtId)
-        if (!round) {
-            callback()
-            return
-        }
-        callback(round)
+    socket.on("round:get", (_, callback?: (round?: Round) => void) => {
+        const courtId = socket.data.courtId
+
+        const round = TEST_ROOMS.get(courtId) || getRound(courtId)
+        if (typeof callback === "function")
+            callback(round)
     })
 
     socket.on("match:rounds:win", (data: { side: Side, roundIdx: number }) => {
@@ -237,47 +195,67 @@ export default function initMatchChannel(io: any, socket: any) {
         // ack(matchResult)
     })
 
-    socket.on("match:config:set", (data: { courtId: string, config: any }) => {
-        const config = MATCH_CONFIG.get(data.courtId)
+    socket.on("match:config:set", (data: { config: any }) => {
+        const courtId = socket.data.courtId
+
+        const config = MATCHS_CONFIG.get(courtId)
         const newC = {
             ...(config ?? {}),
             ...(data.config ?? {})
         }
-        MATCH_CONFIG.set(data.courtId, newC)
+        MATCHS_CONFIG.set(courtId, newC)
 
-        io.to(`court-${data.courtId}`).emit("match:config:update", newC)
+        io.to(`court-${courtId}`).emit("match:config:update", newC)
     })
 
-    socket.on("match:config:get", (data: { courtId: string }, callback: (config: any) => void) => {
-        callback?.(MATCH_CONFIG.get(data.courtId))
+    socket.on("match:config:get", (_, callback?: (config?: any) => void) => {
+        const courtId = socket.data.courtId
+
+        if (typeof callback === "function")
+            callback(MATCHS_CONFIG.get(courtId))
     })
 
-    socket.on("rounds:switch", (data: { courtId: string, currentRound: RoundNo }) => {
-        // const user = socket.user
-        // if (!user || !user.courtId || user.role !== "operator") return
+    socket.on("currentRound:switch", (
+        data: { currentRound: RoundNo },
+        callback?: (data: { message: "success" | "fail" }) => void
+    ) => {
+        if (!isPlainObject(data)) return
+        if (typeof data.currentRound !== "number") return
 
-        const match = MATCH_DB.get(data.courtId)
-        if (!match) return
+        const courtId = socket.data.courtId
+
+        const match = MATCHS.get(courtId)
+        if (!match) return typeof callback === "function"
+            && callback({ message: "fail" })
+
         match.currentRound = data.currentRound
+        if (typeof callback === "function")
+            callback({ message: "success" })
     })
 
-    socket.on("round:winner:set", (data: { courtId: string, winner: Side, winCode: WinCode }) => {
-        const test = TEST_ROOMS.get(data.courtId)
+    socket.on("round:winner:set", (data: { winner: Side, winCode?: WinCode }) => {
+        if (!isPlainObject(data)) return
+        if (!SIDE.includes(data.winner)) return
+        if (data.winCode && !WIN_CODES.includes(data.winCode)) return
+
+        const courtId = socket.data.courtId
+
+        const test = TEST_ROOMS.get(courtId)
         if (test) return
-        const round = getRound(data.courtId)
+        const round = getRound(courtId)
         if (!round) return
 
         round.winner = data.winner
         round.winCode = data.winCode
 
-        io.to(`court-${data.courtId}`).emit("round:winner:update", { winner: round.winner })
-        io.to(`court-${data.courtId}`).emit("round:winCode:update", { winCode: round.winCode })
+        io.to(`court-${courtId}`).emit("round:winner:update", {
+            winner: round.winner,
+            winCode: round.winCode
+        })
     })
 
     socket.on("disconnect", () => {
         const courtId = socket.data.courtId
-
-        if (!courtId) return
 
         const judgesInfo = JUDGES_INFO.get(courtId)
         if (!judgesInfo) return
@@ -287,8 +265,9 @@ export default function initMatchChannel(io: any, socket: any) {
         else broadcastJudgeOrders(io, courtId)
     })
 
-    socket.on("localIp:get", (callback: (ip: string | null) => void) => {
+    /** @deprecated */
+    socket.on("localIp:get", (callback?: (ip: string | null) => void) => {
         const ip = getWifiIP()
-        callback(ip)
+        callback?.(ip)
     })
 }
